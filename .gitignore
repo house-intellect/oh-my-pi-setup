@@ -1,0 +1,10 @@
+# Ignore temporary and virtualenv files
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.venv/
+data/
+*.tar.gz
+bin/omp
+

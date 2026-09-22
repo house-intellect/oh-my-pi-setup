@@ -1,0 +1,25 @@
+# Gemini FastAPI Configuration File
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  api_key: null
+  https:
+    enabled: false
+    key_file: "certs/privkey.pem"
+    cert_file: "certs/fullchain.pem"
+
+cors:
+  enabled: true
+  allow_origins: ["*"]
+  allow_credentials: true
+  allow_methods: ["*"]
+  allow_headers: ["*"]
+
+gemini:
+  clients:
+    - id: "primary-client"
+      secure_1psid: ""
+      secure_1psidts: ""
+      proxy: null
+  timeout: 600
