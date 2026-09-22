@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 data/
 *.tar.gz
+!oh-my-pi-offline.tar.gz
 bin/omp
 *.db
 *.sqlite
