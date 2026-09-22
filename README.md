@@ -17,7 +17,7 @@ It is engineered specifically to operate out-of-the-box in **geoblocked location
    - Completely bypasses OS keyring daemons (`kwalletd5`, `gnome-keyring`), allowing seamless execution in headless SSH sessions.
 
 3. **Built-in DNS-over-HTTPS (DoH) SNI Geoblock Bypass**:
-   - Routes all outbound requests to `gemini.google.com` through DoH (`https://xbox-dns.ru/dns-query` or custom DoH endpoint).
+   - Routes all outbound requests to `gemini.google.com` through DoH (`https://dns.comss.one/dns-query` or custom `GEMINI_DOH_URL`).
    - Transparently handles Google regional filtering at the TLS/SNI layer with zero system network configuration changes.
 
 4. **Self-Sustaining Offline Bundle**:
@@ -62,9 +62,16 @@ Once installed, use the generated `~/omp.sh` launcher. It automatically starts `
 ```
 
 ### Selecting Models
-The default model is `gemini-fastapi:gemini-3.8-flash`. You can also target `gemini-3.7-pro`:
+The default model is `gemini-fastapi:gemini-3.8-flash`. You can also target thinking and pro models:
 ```bash
-~/omp.sh --provider gemini-fastapi --model gemini-3.7-pro -p "Explain quantum entanglement in 2 sentences"
+# Enable extended thinking process:
+~/omp.sh -t -p "Explain how quantum computers factor primes step by step"
+
+# Target specific model:
+~/omp.sh -m gemini-3.1-pro -p "Explain quantum entanglement in 2 sentences"
+
+# List dynamically available models:
+~/omp.sh -l
 ```
 
 ---
@@ -93,8 +100,26 @@ Configurations are stored in `~/.omp/agent/` (and mirrored to `~/.pi/agent/`):
           "maxTokens": 65536
         },
         {
-          "id": "gemini-3.7-pro",
-          "name": "Gemini 3.7 Pro (Local)",
+          "id": "gemini-extended-thinking",
+          "name": "Gemini Extended Thinking (Local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        },
+        {
+          "id": "thinking",
+          "name": "Gemini Thinking Alias (Local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        },
+        {
+          "id": "gemini-3.1-pro",
+          "name": "Gemini 3.1 Pro (Local)",
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },

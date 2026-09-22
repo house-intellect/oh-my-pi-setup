@@ -28,7 +28,7 @@ class GeminiClientWrapper(GeminiClient):
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
         if secure_1psidcc := kwargs.get("secure_1psidcc"):

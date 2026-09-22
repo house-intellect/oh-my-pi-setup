@@ -3,6 +3,12 @@
 # One-Script Installer & Setup for "Oh My Pi" (OMP) with Gemini WebAPI
 # Works in geoblocked locations via DoH SNI routing & Firefox cookie extraction.
 # ==============================================================================
+# POSIX compatibility: re-exec with bash if launched via dash/sh
+if [ -z "$BASH_VERSION" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    fi
+fi
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,6 +16,12 @@ STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 FASTAPI_PORT=8000
 BIN_DIR="$HOME/.local/bin"
+
+DEFAULT_DOH_URL="https://dns.comss.one/dns-query"
+export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
+
+# Purge any stale desynchronized cookie caches to avoid Error 1097
+rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
 
 echo "=== [1/5] Checking Environment & Dependencies ==="
 
@@ -78,6 +90,11 @@ if [ ! -f "$FASTAPI_DIR/run.py" ]; then
         echo "Error: No gemini-fastapi source found and git is unavailable."
         exit 1
     fi
+else
+    echo "Found existing Gemini-FastAPI at $FASTAPI_DIR, synchronizing latest app updates..."
+    if [ -d "$SCRIPT_DIR/gemini-fastapi/app" ]; then
+        cp -r "$SCRIPT_DIR/gemini-fastapi/app/"* "$FASTAPI_DIR/app/" 2>/dev/null || true
+    fi
 fi
 
 # Ensure Python Virtual Environment
@@ -86,6 +103,9 @@ if [ -d "$STACK_DIR/tool-calling-test/.venv" ] && [ -x "$STACK_DIR/tool-calling-
     echo "Reusing existing verified local-ai-stack virtual environment..."
     PYTHON_EXEC="$STACK_DIR/tool-calling-test/.venv/bin/python"
     ln -sfn "$STACK_DIR/tool-calling-test/.venv" "$FASTAPI_DIR/.venv"
+elif [ -d "$FASTAPI_DIR/.venv" ] && [ -x "$FASTAPI_DIR/.venv/bin/python" ]; then
+    echo "Reusing existing gemini-fastapi virtual environment..."
+    PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
 else
     if [ ! -d "$FASTAPI_DIR/.venv" ]; then
         echo "Creating dedicated virtual environment in $FASTAPI_DIR/.venv..."
@@ -147,7 +167,7 @@ if wrap_file.exists():
         try:
             from curl_cffi import CurlOpt
             import os
-            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query").encode()
+            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query").encode()
             if CurlOpt.DOH_URL not in self.curl_options:
                 self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
         except Exception:
@@ -220,12 +240,15 @@ if wrap_file.exists():
 pool_file = fastapi_dir / "app" / "services" / "pool.py"
 if pool_file.exists():
     ptxt = pool_file.read_text()
+    if "clean_stale_gemini_cookie_caches" not in ptxt:
+        ptxt = "import glob\nimport os\n\ndef clean_stale_gemini_cookie_caches():\n    for f in glob.glob(\"/tmp/gemini_webapi/.cached_cookies_*.json\"):\n        try:\n            os.remove(f)\n        except OSError:\n            pass\n\n" + ptxt
     if "GeminiClientSettings" not in ptxt:
         ptxt = ptxt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
     new_pool_code = """class GeminiClientPool(metaclass=Singleton):
     \"\"\"Pool of GeminiClient instances identified by unique ids.\"\"\"
 
     def __init__(self) -> None:
+        clean_stale_gemini_cookie_caches()
         self._clients: list[GeminiClientWrapper] = []
         self._id_map: dict[str, GeminiClientWrapper] = {}
         self._round_robin: deque[GeminiClientWrapper] = deque()
@@ -300,7 +323,7 @@ if pool_file.exists():
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -349,7 +372,7 @@ if pool_file.exists():
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+                doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 for b_name in ["firefox", "chrome", "chromium", "brave"]:
@@ -551,7 +574,7 @@ for sp in sys.path:
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+            curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -579,7 +602,7 @@ except Exception:
         if "self.curl_options" not in txt:
             txt = txt.replace(
                 "self.kwargs = kwargs",
-                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass"
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass"
             )
             txt = txt.replace(
                 "verify=self.kwargs.get(\"verify\", True),",
@@ -625,7 +648,7 @@ except Exception:
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
     if utils_file.exists():
         utxt = utils_file.read_text()
-        if "https://xbox-dns.ru/dns-query" not in utxt and "if curl_options:" in utxt:
+        if "https://dns.comss.one/dns-query" not in utxt and "if curl_options:" in utxt:
             utxt = utxt.replace(
                 "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
                 """    if curl_options is None:
@@ -633,7 +656,7 @@ except Exception:
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        curl_options[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+        curl_options[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
             )
@@ -662,8 +685,26 @@ cat << 'EOF' > "$HOME/.omp/agent/models.json"
           "maxTokens": 65536
         },
         {
-          "id": "gemini-3.7-pro",
-          "name": "Gemini 3.7 Pro (Local)",
+          "id": "gemini-extended-thinking",
+          "name": "Gemini Extended Thinking (Local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        },
+        {
+          "id": "thinking",
+          "name": "Gemini Thinking Alias (Local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        },
+        {
+          "id": "gemini-3.1-pro",
+          "name": "Gemini 3.1 Pro (Local)",
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -689,71 +730,109 @@ cat << 'RUNNER_EOF' > "$HOME/omp.sh"
 # ==============================================================================
 # Oh My Pi (omp) launcher with automatic Gemini-FastAPI lifecycle management.
 # ==============================================================================
-
 FASTAPI_PORT=8000
-FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
+STACK_DIR="$HOME/local-ai-stack"
+FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
-[ -x "$BIN_DIR/omp" ] || BIN_DIR="$HOME/local-ai-stack/bin"
+[ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
+
+DEFAULT_DOH_URL="https://dns.comss.one/dns-query"
+export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
+export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
+
+MODEL_ARG=""
+LIST_MODELS=0
+EXTRA_ARGS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t|--thinking)
+            MODEL_ARG="gemini-extended-thinking"
+            shift
+            ;;
+        -m|--model)
+            MODEL_ARG="$2"
+            shift 2
+            ;;
+        -l|--list-models)
+            LIST_MODELS=1
+            shift
+            ;;
+        *)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
 
 # 1. Ensure Gemini-FastAPI server is running
-FASTAPI_RUNNING=0
-if command -v ss &>/dev/null && ss -tulpn 2>/dev/null | grep -q ":$FASTAPI_PORT "; then
-    FASTAPI_RUNNING=1
-elif command -v lsof &>/dev/null && lsof -i :$FASTAPI_PORT >/dev/null 2>&1; then
-    FASTAPI_RUNNING=1
-elif curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$FASTAPI_PORT/health" 2>/dev/null | grep -qE "200|404"; then
-    FASTAPI_RUNNING=1
-fi
+PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
+[ -x "$PYTHON_EXEC" ] || PYTHON_EXEC="$STACK_DIR/tool-calling-test/.venv/bin/python"
 
-if [ $FASTAPI_RUNNING -eq 0 ]; then
-    echo "[omp.sh] Starting Gemini-FastAPI background daemon..."
-    PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
-    [ -x "$PYTHON_EXEC" ] || PYTHON_EXEC="$HOME/local-ai-stack/tool-calling-test/.venv/bin/python"
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+
+if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+    echo "[omp.sh] Starting Gemini-FastAPI background daemon on port $FASTAPI_PORT..."
     if [ ! -x "$PYTHON_EXEC" ]; then
-        echo "Error: Python environment for Gemini-FastAPI not found."
+        echo "Error: Python executable for Gemini-FastAPI not found."
         exit 1
     fi
 
+    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     (
         cd "$FASTAPI_DIR"
-        unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
-        nohup "$PYTHON_EXEC" run.py > "$FASTAPI_DIR/fastapi.log" 2>&1 &
+        if command -v setsid >/dev/null 2>&1; then
+            setsid env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+                "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+        else
+            nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+                "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+        fi
     )
 
-    # Wait for server readiness
     READY=0
-    for i in $(seq 1 30); do
-        if curl -s "http://127.0.0.1:$FASTAPI_PORT/health" 2>/dev/null | grep -q "status"; then
+    printf "[omp.sh] Waiting for Gemini-FastAPI to initialize"
+    for i in $(seq 1 120); do
+        if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
             READY=1
-            break
-        elif curl -s "http://127.0.0.1:$FASTAPI_PORT/v1/models" 2>/dev/null | grep -q "object"; then
-            READY=1
+            echo " ready!"
             break
         fi
+        printf "."
         sleep 1
     done
+    echo ""
 
     if [ $READY -eq 0 ]; then
-        echo "Warning: Server started but healthcheck timed out. Check $FASTAPI_DIR/fastapi.log"
-    else
-        echo "[omp.sh] Gemini-FastAPI is ready on port $FASTAPI_PORT."
+        echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT within 120 seconds."
+        [ -f "$STACK_DIR/proxy_access.log" ] && tail -n 25 "$STACK_DIR/proxy_access.log"
+        exit 1
     fi
 fi
 
-# 2. CRITICAL: Unset proxy environment variables for loopback connection to 127.0.0.1:8000
-unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+# 2. List models if requested
+if [ $LIST_MODELS -eq 1 ]; then
+    echo "Available models from Gemini-FastAPI:"
+    curl --noproxy "*" -s "http://127.0.0.1:$FASTAPI_PORT/v1/models" | grep -o '"id": *"[^"]*"' | cut -d'"' -f4 | sed 's/^/  - /'
+    exit 0
+fi
 
-# 3. Ensure omp executable is found
+# 3. CRITICAL: Unset proxy environment variables for loopback connection to 127.0.0.1:8000
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+
+# 4. Ensure omp executable is found
 if [ ! -x "$BIN_DIR/omp" ]; then
     echo "Error: omp binary not found at $BIN_DIR/omp."
     exit 1
 fi
 
-# 4. Execute omp
-exec "$BIN_DIR/omp" "$@"
+# 5. Execute omp (defaulting to local gemini-fastapi provider)
+MODEL_ARG="${MODEL_ARG:-gemini-3.8-flash}"
+exec "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 RUNNER_EOF
 
 chmod +x "$HOME/omp.sh"
+[ -d "$SCRIPT_DIR" ] && cp "$HOME/omp.sh" "$SCRIPT_DIR/omp.sh" && chmod +x "$SCRIPT_DIR/omp.sh"
 chmod +x "$BIN_DIR/omp"
 
 echo ""

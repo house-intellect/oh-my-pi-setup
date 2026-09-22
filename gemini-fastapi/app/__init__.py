@@ -11,7 +11,11 @@ try:
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+            import os
+            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+            if isinstance(doh_endpoint, str):
+                doh_endpoint = doh_endpoint.encode()
+            curl_opts[CurlOpt.DOH_URL] = doh_endpoint
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init

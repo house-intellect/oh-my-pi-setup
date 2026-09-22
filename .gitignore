@@ -7,4 +7,9 @@ __pycache__/
 data/
 *.tar.gz
 bin/omp
+*.db
+*.sqlite
+*.sqlite3
+conversations.db
+webui.db
 

@@ -1,3 +1,14 @@
+import glob
+import os
+
+def clean_stale_gemini_cookie_caches():
+    """Purge cached cookie files that cause Error 1097 desync."""
+    for f in glob.glob("/tmp/gemini_webapi/.cached_cookies_*.json"):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
 import asyncio
 from collections import deque
 
@@ -14,6 +25,7 @@ class GeminiClientPool(metaclass=Singleton):
     """Pool of GeminiClient instances identified by unique ids."""
 
     def __init__(self) -> None:
+        clean_stale_gemini_cookie_caches()
         self._clients: list[GeminiClientWrapper] = []
         self._id_map: dict[str, GeminiClientWrapper] = {}
         self._round_robin: deque[GeminiClientWrapper] = deque()
@@ -94,7 +106,7 @@ class GeminiClientPool(metaclass=Singleton):
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -144,7 +156,7 @@ class GeminiClientPool(metaclass=Singleton):
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+                doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 # Try Firefox first

@@ -204,7 +204,11 @@ async def save_url_to_tempfile(url: str, tempdir: Path | None = None) -> Path:
         curl_opts = {}
         try:
             from curl_cffi import CurlOpt
-            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+            import os
+            doh = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+            if isinstance(doh, str):
+                doh = doh.encode()
+            curl_opts[CurlOpt.DOH_URL] = doh
         except Exception:
             pass
         async with AsyncSession(
