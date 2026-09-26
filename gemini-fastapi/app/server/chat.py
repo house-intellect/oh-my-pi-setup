@@ -1,7 +1,9 @@
+import asyncio
 import base64
 import hashlib
 import io
 import re
+import time
 import reprlib
 import uuid
 from collections.abc import AsyncGenerator
@@ -946,6 +948,27 @@ async def _find_reusable_session(
     return None, None, messages
 
 
+_rate_limit_lock = asyncio.Lock()
+_last_request_time = 0.0
+_last_response_time = 0.0
+MIN_REQUEST_INTERVAL = 2.0  # Impose max request frequency: at most 1 request per 2 seconds
+
+async def _throttle_request():
+    global _last_request_time, _last_response_time
+    async with _rate_limit_lock:
+        now = time.monotonic()
+        target_time = max(_last_request_time, _last_response_time) + MIN_REQUEST_INTERVAL
+        if now < target_time:
+            wait_sec = target_time - now
+            logger.info(f"Rate limiting active: waiting {wait_sec:.2f}s before sending to Gemini...")
+            await asyncio.sleep(wait_sec)
+        _last_request_time = time.monotonic()
+
+def _mark_response_completed():
+    global _last_response_time
+    _last_response_time = time.monotonic()
+
+
 async def _send_with_split(
     session: ChatSession,
     text: str,
@@ -954,13 +977,17 @@ async def _send_with_split(
     temporary: bool = False,
 ) -> AsyncGenerator[ModelOutput] | ModelOutput:
     """Send text to Gemini, splitting or converting to attachment if too long."""
+    await _throttle_request()
     effective_limit = _effective_max_chars_per_request()
     if len(text) <= effective_limit:
         try:
             if stream:
                 return session.send_message_stream(text, files=files, temporary=temporary)
-            return await session.send_message(text, files=files, temporary=temporary)
+            output = await session.send_message(text, files=files, temporary=temporary)
+            _mark_response_completed()
+            return output
         except Exception as e:
+            _mark_response_completed()
             logger.exception(f"Error sending message to Gemini: {e}")
             raise
 
@@ -979,8 +1006,11 @@ async def _send_with_split(
         )
         if stream:
             return session.send_message_stream(instruction, files=final_files, temporary=temporary)
-        return await session.send_message(instruction, files=final_files, temporary=temporary)
+        output = await session.send_message(instruction, files=final_files, temporary=temporary)
+        _mark_response_completed()
+        return output
     except Exception as e:
+        _mark_response_completed()
         logger.exception(f"Error sending large text as file to Gemini: {e}")
         raise
 
@@ -1016,16 +1046,12 @@ async def _send_with_internal_fallback(
         )
         return output, session, client
     except Exception as exc:
-        should_fallback = (
-            reused_session
-            and not stream
-            and _is_missing_chat_error(exc)
-        )
+        should_fallback = reused_session
         if not should_fallback:
             raise
 
         logger.warning(
-            "Metadata-backed chat reuse failed; retrying with internal history replay in a fresh chat."
+            f"Metadata-backed chat reuse failed ({exc}); retrying with internal history replay in a fresh chat."
         )
         fallback_client = await pool.acquire()
         fallback_session = fallback_client.start_chat(model=model)
@@ -1039,7 +1065,7 @@ async def _send_with_internal_fallback(
             fallback_session,
             fallback_input,
             files=fallback_files,
-            stream=False,
+            stream=stream,
             temporary=temporary,
         )
         return output, fallback_session, fallback_client
@@ -1208,8 +1234,9 @@ def _create_real_streaming_response(
                         }
                         yield f"data: {orjson.dumps(data).decode('utf-8')}\n\n"
         except Exception as e:
+            _mark_response_completed()
             logger.exception(f"Error during OpenAI streaming: {e}")
-            yield f"data: {orjson.dumps({'error': {'message': 'Streaming error occurred.', 'type': 'server_error', 'param': None, 'code': None}}).decode('utf-8')}\n\n"
+            yield f"data: {orjson.dumps({'error': {'message': f'Streaming error occurred: {e}', 'type': 'server_error', 'param': None, 'code': None}}).decode('utf-8')}\n\n"
             return
 
         if all_outputs:
@@ -1321,6 +1348,9 @@ def _create_real_streaming_response(
         )
         yield f"data: {orjson.dumps(data).decode('utf-8')}\n\n"
         yield "data: [DONE]\n\n"
+        _mark_response_completed()
+        _mark_response_completed()
+        _mark_response_completed()
 
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
 
@@ -1784,6 +1814,8 @@ def _create_responses_real_streaming_response(
         )
 
         yield "data: [DONE]\n\n"
+        _mark_response_completed()
+        _mark_response_completed()
 
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
 

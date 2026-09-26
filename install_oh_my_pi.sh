@@ -17,11 +17,134 @@ FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 FASTAPI_PORT=8000
 BIN_DIR="$HOME/.local/bin"
 
-DEFAULT_DOH_URL="https://dns.comss.one/dns-query"
+DEFAULT_DOH_URL="https://xbox-dns.ru/dns-query"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 
 # Purge any stale desynchronized cookie caches to avoid Error 1097
 rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
+
+stop_running_stack() {
+    echo "=== Checking and Stopping Existing AI Stack Processes & Port Conflicts ==="
+    local ports=(8000 8080)
+    local found_occupying=0
+    local announced_pids=""
+
+    # 1. Inspect required ports directly and notify the user
+    for port in "${ports[@]}"; do
+        local pids=""
+        if command -v lsof >/dev/null 2>&1; then
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+        elif command -v fuser >/dev/null 2>&1; then
+            pids=$(fuser "${port}/tcp" 2>/dev/null || true)
+        fi
+        if [ -n "$pids" ]; then
+            for pid in $pids; do
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    local cmd=""
+                    if [ -r "/proc/$pid/cmdline" ]; then
+                        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                    fi
+                    [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                    echo "⚠️  Found process occupying required port $port: PID $pid ($cmd)"
+                    echo "   -> Terminating PID $pid to allow stack services to bind to port $port..."
+                    found_occupying=1
+                    announced_pids="$announced_pids $pid"
+                fi
+            done
+        fi
+    done
+
+    # 2. Check known stack processes by pattern
+    local pattern_pids
+    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    if [ -n "$pattern_pids" ]; then
+        for pid in $pattern_pids; do
+            case " $announced_pids " in
+                *" $pid "*) ;; # already announced
+                *)
+                    if kill -0 "$pid" 2>/dev/null; then
+                        local cmd=""
+                        if [ -r "/proc/$pid/cmdline" ]; then
+                            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                        fi
+                        [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                        echo "⚠️  Found active previous stack instance: PID $pid ($cmd)"
+                        echo "   -> Terminating PID $pid to prevent version collisions..."
+                        found_occupying=1
+                        announced_pids="$announced_pids $pid"
+                    fi
+                    ;;
+            esac
+        done
+    fi
+
+    # 3. Stop systemd services if present
+    if command -v systemctl >/dev/null 2>&1; then
+        for srv in open-webui.service gemini-fastapi.service; do
+            if systemctl --user is-active "$srv" >/dev/null 2>&1; then
+                echo "⚠️  Found active systemd user service: $srv"
+                echo "   -> Stopping $srv so stack can manage ports ${ports[*]}..."
+                systemctl --user stop "$srv" 2>/dev/null || true
+                found_occupying=1
+            fi
+        done
+    fi
+
+    if [ "$found_occupying" -eq 0 ]; then
+        echo "✓ Required ports (${ports[*]}) are free. No conflicting processes detected."
+        return 0
+    fi
+
+    # 4. Terminate with SIGTERM
+    pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    pkill -TERM -f "open-webui serve" 2>/dev/null || true
+    pkill -TERM -f "open_webui" 2>/dev/null || true
+
+    for port in "${ports[@]}"; do
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -TERM "${port}/tcp" >/dev/null 2>&1 || true
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            local pids
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+            if [ -n "$pids" ]; then
+                kill -TERM $pids >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+
+    local wait_count=0
+    while [ $wait_count -lt 5 ]; do
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+            sleep 1
+            wait_count=$((wait_count + 1))
+        else
+            break
+        fi
+    done
+
+    # 5. Force kill fallback with SIGKILL if still holding ports or running
+    for port in "${ports[@]}"; do
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -KILL "${port}/tcp" >/dev/null 2>&1 || true
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            local pids
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+            if [ -n "$pids" ]; then
+                kill -9 $pids >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+    pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    pkill -9 -f "open-webui serve" 2>/dev/null || true
+    pkill -9 -f "open_webui" 2>/dev/null || true
+    sleep 1
+
+    echo "✓ Conflicting processes terminated. Ports (${ports[*]}) are now free."
+}
+
+stop_running_stack
 
 echo "=== [1/5] Checking Environment & Dependencies ==="
 
@@ -167,7 +290,7 @@ if wrap_file.exists():
         try:
             from curl_cffi import CurlOpt
             import os
-            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query").encode()
+            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query").encode()
             if CurlOpt.DOH_URL not in self.curl_options:
                 self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
         except Exception:
@@ -323,7 +446,7 @@ if pool_file.exists():
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -372,39 +495,55 @@ if pool_file.exists():
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
-                if isinstance(doh_url, str):
-                    doh_url = doh_url.encode()
-                for b_name in ["firefox", "chrome", "chromium", "brave"]:
+                candidate_resolvers = []
+                env_doh = os.environ.get("GEMINI_DOH_URL")
+                if env_doh:
+                    candidate_resolvers.append(env_doh)
+                for r in ["https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query", "https://1.1.1.1/dns-query"]:
+                    if r not in candidate_resolvers:
+                        candidate_resolvers.append(r)
+
+                initialized = False
+                for b_name in ["chrome", "firefox", "chromium", "brave"]:
+                    if initialized:
+                        break
                     fn = getattr(rookiepy, b_name, None)
                     if not fn:
                         continue
                     try:
                         cookies = fn([".google.com"])
                         cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"] and "1PSID" in c.get("name", "")}
-                        if "__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict:
-                            fallback_client = GeminiClientWrapper(
-                                client_id=f"live-{b_name}",
-                                secure_1psid=cdict["__Secure-1PSID"],
-                                secure_1psidts=cdict["__Secure-1PSIDTS"],
-                                secure_1psidcc=cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC"),
-                                proxy=None,
-                                curl_options={CurlOpt.DOH_URL: doh_url},
-                            )
-                            await fallback_client.init(
-                                timeout=g_config.gemini.timeout,
-                                watchdog_timeout=g_config.gemini.watchdog_timeout,
-                                auto_refresh=g_config.gemini.auto_refresh,
-                                verbose=g_config.gemini.verbose,
-                                refresh_interval=g_config.gemini.refresh_interval,
-                            )
-                            if fallback_client.running():
-                                self._clients.append(fallback_client)
-                                self._id_map[fallback_client.id] = fallback_client
-                                self._round_robin.append(fallback_client)
-                                self._restart_locks[fallback_client.id] = asyncio.Lock()
-                                success_count += 1
-                                break
+                        if not ("__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict):
+                            continue
+
+                        for resolver in candidate_resolvers:
+                            doh_bytes = resolver.encode() if isinstance(resolver, str) else resolver
+                            try:
+                                fallback_client = GeminiClientWrapper(
+                                    client_id=f"live-{b_name}",
+                                    secure_1psid=cdict["__Secure-1PSID"],
+                                    secure_1psidts=cdict["__Secure-1PSIDTS"],
+                                    secure_1psidcc=cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC"),
+                                    proxy=None,
+                                    curl_options={CurlOpt.DOH_URL: doh_bytes},
+                                )
+                                await fallback_client.init(
+                                    timeout=g_config.gemini.timeout,
+                                    watchdog_timeout=g_config.gemini.watchdog_timeout,
+                                    auto_refresh=g_config.gemini.auto_refresh,
+                                    verbose=g_config.gemini.verbose,
+                                    refresh_interval=g_config.gemini.refresh_interval,
+                                )
+                                if fallback_client.running():
+                                    self._clients.append(fallback_client)
+                                    self._id_map[fallback_client.id] = fallback_client
+                                    self._round_robin.append(fallback_client)
+                                    self._restart_locks[fallback_client.id] = asyncio.Lock()
+                                    success_count += 1
+                                    initialized = True
+                                    break
+                            except Exception:
+                                continue
                     except Exception:
                         continue
             except Exception:
@@ -517,7 +656,33 @@ def _get_model_by_name(name: str) -> Model:
         return Model.BASIC_FLASH"""
         if old_fn in ctext:
             ctext = ctext.replace(old_fn, new_fn)
-            chat_py.write_text(ctext)
+
+    if "_throttle_request" not in ctext:
+        rate_code = """import asyncio
+import time
+_rate_limit_lock = asyncio.Lock()
+_last_request_time = 0.0
+_last_response_time = 0.0
+MIN_REQUEST_INTERVAL = 2.0  # Impose max request frequency: at most 1 request per 2 seconds
+
+async def _throttle_request():
+    global _last_request_time, _last_response_time
+    async with _rate_limit_lock:
+        now = time.monotonic()
+        target_time = max(_last_request_time, _last_response_time) + MIN_REQUEST_INTERVAL
+        if now < target_time:
+            wait_sec = target_time - now
+            logger.info(f"Rate limiting active: waiting {wait_sec:.2f}s before sending to Gemini...")
+            await asyncio.sleep(wait_sec)
+        _last_request_time = time.monotonic()
+
+def _mark_response_completed():
+    global _last_response_time
+    _last_response_time = time.monotonic()
+"""
+        doc_target = "\"\"\"Send text to Gemini, splitting or converting to attachment if too long.\"\"\""
+        ctext = ctext.replace(doc_target, doc_target + "\n    await _throttle_request()")
+    chat_py.write_text(ctext)
 
 # 5. Patch config/config.yaml to ensure empty credentials trigger browser extraction
 cfg_file = fastapi_dir / "config" / "config.yaml"
@@ -574,7 +739,7 @@ for sp in sys.path:
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -602,7 +767,7 @@ except Exception:
         if "self.curl_options" not in txt:
             txt = txt.replace(
                 "self.kwargs = kwargs",
-                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass"
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass"
             )
             txt = txt.replace(
                 "verify=self.kwargs.get(\"verify\", True),",
@@ -648,7 +813,7 @@ except Exception:
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
     if utils_file.exists():
         utxt = utils_file.read_text()
-        if "https://dns.comss.one/dns-query" not in utxt and "if curl_options:" in utxt:
+        if "https://xbox-dns.ru/dns-query" not in utxt and "if curl_options:" in utxt:
             utxt = utxt.replace(
                 "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
                 """    if curl_options is None:
@@ -656,7 +821,7 @@ except Exception:
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        curl_options[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+        curl_options[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
             )
@@ -736,7 +901,7 @@ FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
 [ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
 
-DEFAULT_DOH_URL="https://dns.comss.one/dns-query"
+DEFAULT_DOH_URL="https://xbox-dns.ru/dns-query"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
 
@@ -772,6 +937,32 @@ PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+    # Check if port 8000 is occupied by an unresponsive or conflicting process
+    local_pids=""
+    if command -v lsof >/dev/null 2>&1; then
+        local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
+    elif command -v fuser >/dev/null 2>&1; then
+        local_pids=$(fuser "${FASTAPI_PORT}/tcp" 2>/dev/null || true)
+    fi
+    if [ -n "$local_pids" ]; then
+        for pid in $local_pids; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                cmd=""
+                if [ -r "/proc/$pid/cmdline" ]; then
+                    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                fi
+                [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                echo "[omp.sh] ⚠️  Found process occupying required port $FASTAPI_PORT: PID $pid ($cmd)"
+                echo "[omp.sh]    -> Terminating PID $pid to allow Gemini-FastAPI to bind to port $FASTAPI_PORT..."
+                kill -TERM "$pid" 2>/dev/null || true
+                sleep 1
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill -9 "$pid" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
+
     echo "[omp.sh] Starting Gemini-FastAPI background daemon on port $FASTAPI_PORT..."
     if [ ! -x "$PYTHON_EXEC" ]; then
         echo "Error: Python executable for Gemini-FastAPI not found."

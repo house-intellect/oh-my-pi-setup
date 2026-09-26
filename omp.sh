@@ -8,7 +8,7 @@ FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
 [ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
 
-DEFAULT_DOH_URL="https://dns.comss.one/dns-query"
+DEFAULT_DOH_URL="https://xbox-dns.ru/dns-query"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
 
@@ -44,6 +44,32 @@ PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+    # Check if port 8000 is occupied by an unresponsive or conflicting process
+    local_pids=""
+    if command -v lsof >/dev/null 2>&1; then
+        local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
+    elif command -v fuser >/dev/null 2>&1; then
+        local_pids=$(fuser "${FASTAPI_PORT}/tcp" 2>/dev/null || true)
+    fi
+    if [ -n "$local_pids" ]; then
+        for pid in $local_pids; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                cmd=""
+                if [ -r "/proc/$pid/cmdline" ]; then
+                    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                fi
+                [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                echo "[omp.sh] ⚠️  Found process occupying required port $FASTAPI_PORT: PID $pid ($cmd)"
+                echo "[omp.sh]    -> Terminating PID $pid to allow Gemini-FastAPI to bind to port $FASTAPI_PORT..."
+                kill -TERM "$pid" 2>/dev/null || true
+                sleep 1
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill -9 "$pid" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
+
     echo "[omp.sh] Starting Gemini-FastAPI background daemon on port $FASTAPI_PORT..."
     if [ ! -x "$PYTHON_EXEC" ]; then
         echo "Error: Python executable for Gemini-FastAPI not found."

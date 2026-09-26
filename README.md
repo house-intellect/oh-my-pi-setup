@@ -16,9 +16,11 @@ It is engineered specifically to operate out-of-the-box in **geoblocked location
    - Directly extracts active session cookies (`__Secure-1PSID`, `__Secure-1PSIDTS`, `__Secure-1PSIDCC` / `__Secure-3PSIDCC` / `SIDCC`) from Firefox profile database (`cookies.sqlite`).
    - Completely bypasses OS keyring daemons (`kwalletd5`, `gnome-keyring`), allowing seamless execution in headless SSH sessions.
 
-3. **Built-in DNS-over-HTTPS (DoH) SNI Geoblock Bypass**:
-   - Routes all outbound requests to `gemini.google.com` through DoH (`https://dns.comss.one/dns-query` or custom `GEMINI_DOH_URL`).
+3. **Built-in DNS-over-HTTPS (DoH) SNI Geoblock Bypass & Rate Limiting**:
+   - Routes outbound requests to `gemini.google.com` through resilient DoH (`https://xbox-dns.ru/dns-query` with automatic fallback to `https://dns.comss.one/dns-query` and `https://1.1.1.1/dns-query`, or custom `GEMINI_DOH_URL`).
    - Transparently handles Google regional filtering at the TLS/SNI layer with zero system network configuration changes.
+   - Enforces a 1 request per 2 seconds rate limit to prevent Google quota violations and server-side rate drops.
+   - Includes automatic port occupancy detection with user notification and termination of conflicting processes.
 
 4. **Self-Sustaining Offline Bundle**:
    - Ships with pre-compiled native binaries (`omp`), server sources, and complete runtime patches packaged into `oh-my-pi-offline.tar.gz`.
