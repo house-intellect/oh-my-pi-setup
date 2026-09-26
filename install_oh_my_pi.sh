@@ -148,14 +148,24 @@ stop_running_stack
 
 echo "=== [1/5] Checking Environment & Dependencies ==="
 
-# Check Python 3
-if ! command -v python3 &>/dev/null; then
-    echo "Error: Python 3 is required. Please install python3 (>= 3.10)."
+# Check Python 3 (>= 3.10 baseline)
+PY_EXEC=""
+for p in python3.12 python3.11 python3.10 python3; do
+    if command -v "$p" &>/dev/null; then
+        if "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            PY_EXEC="$(command -v "$p")"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PY_EXEC" ]; then
+    echo "Error: Python >= 3.10 is required (baseline back-compat). Please install python3 (>= 3.10)."
     exit 1
 fi
 
-PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-echo "Detected Python $PY_VER"
+PY_VER=$("$PY_EXEC" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo "Detected Python $PY_VER ($PY_EXEC)"
 
 # Check Curl
 if ! command -v curl &>/dev/null; then
@@ -231,8 +241,8 @@ elif [ -d "$FASTAPI_DIR/.venv" ] && [ -x "$FASTAPI_DIR/.venv/bin/python" ]; then
     PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
 else
     if [ ! -d "$FASTAPI_DIR/.venv" ]; then
-        echo "Creating dedicated virtual environment in $FASTAPI_DIR/.venv..."
-        python3 -m venv "$FASTAPI_DIR/.venv"
+        echo "Creating dedicated virtual environment in $FASTAPI_DIR/.venv using $PY_EXEC..."
+        "$PY_EXEC" -m venv "$FASTAPI_DIR/.venv"
     fi
     PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
     PIP_EXEC="$FASTAPI_DIR/.venv/bin/pip"
