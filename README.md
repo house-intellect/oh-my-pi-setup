@@ -29,19 +29,27 @@ It is engineered specifically to operate out-of-the-box in **geoblocked location
 
 ## 🚀 Quick Start & Installation
 
-### Option 1: One-Script Online / Standard Installation
+### ⚡ One-Liner Quick Install (Google Drive Self-Sufficient Bundle)
+
+Download the pre-packaged standalone bundle directly from Google Drive and install in a single command:
+```bash
+curl -sSL "https://drive.usercontent.google.com/download?id=1EBJ6bqYXOG6qV-IezG2tuASbxbdEzV63&export=download&confirm=t" -o oh-my-pi-offline.tar.gz && tar -xzf oh-my-pi-offline.tar.gz && bash install_oh_my_pi.sh
+```
+
+### Option 1: One-Script Local / Cloned Installation
 Clone the repository (or extract the archive) and run:
 ```bash
 ./install_oh_my_pi.sh
 ```
 
 The script will automatically:
-1. Validate Python (>= 3.10) and system utilities.
+1. Validate Python (>= 3.10) and system utilities (including `bwrap`).
 2. Deploy the `omp` native binary to `~/.local/bin/omp` and `~/local-ai-stack/bin/omp`.
 3. Set up `gemini-fastapi` under `~/local-ai-stack/gemini-fastapi`.
-4. Apply the geoblock bypass, DoH resolver, and keyring-free extraction patches.
-5. Generate `~/.omp/agent/models.json` and `~/.omp/agent/config.yml`.
-6. Create the executable launcher `~/omp.sh`.
+4. Configure isolated local hosts DNS resolution (`~/.local/share/gemini-spoof/hosts`) via `bwrap`.
+5. Apply geoblock bypass, DoH resolver, and keyring-free cookie extraction patches.
+6. Generate `~/.omp/agent/models.json` and `~/.omp/agent/config.yml`.
+7. Create the executable launcher `~/omp.sh`.
 
 ---
 
@@ -147,6 +155,7 @@ To generate a standalone distribution package containing the binary, source code
 ```bash
 tar -czvf oh-my-pi-offline.tar.gz \
     install_oh_my_pi.sh \
+    omp.sh \
     bin/omp \
     gemini-fastapi \
     README.md
