@@ -17,8 +17,60 @@ FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 FASTAPI_PORT=8000
 BIN_DIR="$HOME/.local/bin"
 
-DEFAULT_DOH_URL="https://xbox-dns.ru/dns-query"
+check_trash_execution() {
+    local cwd_phys
+    cwd_phys="$(pwd -P 2>/dev/null || pwd)"
+    case "$SCRIPT_DIR|$cwd_phys" in
+        *Trash*|*/.local/share/Trash/*|*/.Trash/*)
+            echo "❌ ERROR: Cannot run installation from inside Trash directory:"
+            echo "   SCRIPT_DIR: $SCRIPT_DIR"
+            echo "   CWD:        $cwd_phys"
+            echo ""
+            echo "   This happens if previous project directories were deleted via a file manager or trash"
+            echo "   while your terminal was still navigated inside them."
+            echo "   Please navigate to a clean folder outside of Trash, for example:"
+            echo "       cd ~"
+            echo "       tar -xzf oh-my-pi-offline.tar.gz"
+            echo "       cd oh-my-pi-setup && ./install_oh_my_pi.sh"
+            exit 1
+            ;;
+    esac
+}
+check_trash_execution
+
+# Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
+detect_firefox_doh() {
+    local dirs=(
+        "$HOME/.mozilla/firefox"
+        "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox"
+        "$HOME/snap/firefox/common/.mozilla/firefox"
+    )
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        for pref in "$d"/*/prefs.js; do
+            [ -f "$pref" ] || continue
+            local uri
+            uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
+            if [ -n "$uri" ]; then
+                echo "$uri"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
+    DETECTED_DOH=$(detect_firefox_doh || true)
+    if [ -n "$DETECTED_DOH" ]; then
+        CUSTOM_DOH_URL="$DETECTED_DOH"
+    else
+        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+    fi
+fi
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.comss.one/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
+export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 
 # Purge any stale desynchronized cookie caches to avoid Error 1097
 rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
@@ -300,7 +352,7 @@ if wrap_file.exists():
         try:
             from curl_cffi import CurlOpt
             import os
-            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query").encode()
+            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query").encode()
             if CurlOpt.DOH_URL not in self.curl_options:
                 self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
         except Exception:
@@ -456,7 +508,7 @@ if pool_file.exists():
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -509,7 +561,7 @@ if pool_file.exists():
                 env_doh = os.environ.get("GEMINI_DOH_URL")
                 if env_doh:
                     candidate_resolvers.append(env_doh)
-                for r in ["https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query", "https://1.1.1.1/dns-query"]:
+                for r in ["https://dns.comss.one/dns-query", "https://cloudflare-dns.com/dns-query"]:
                     if r not in candidate_resolvers:
                         candidate_resolvers.append(r)
 
@@ -749,7 +801,10 @@ for sp in sys.path:
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+            doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+            if isinstance(doh_ep, str):
+                doh_ep = doh_ep.encode()
+            curl_opts[CurlOpt.DOH_URL] = doh_ep
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -777,7 +832,7 @@ except Exception:
         if "self.curl_options" not in txt:
             txt = txt.replace(
                 "self.kwargs = kwargs",
-                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass"
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                doh_ep = os.environ.get(\"GEMINI_DOH_URL\", \"https://dns.comss.one/dns-query\").encode()\n                self.curl_options = {CurlOpt.DOH_URL: doh_ep}\n            except Exception:\n                pass"
             )
             txt = txt.replace(
                 "verify=self.kwargs.get(\"verify\", True),",
@@ -823,7 +878,7 @@ except Exception:
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
     if utils_file.exists():
         utxt = utils_file.read_text()
-        if "https://xbox-dns.ru/dns-query" not in utxt and "if curl_options:" in utxt:
+        if "dns.comss.one" not in utxt and "if curl_options:" in utxt:
             utxt = utxt.replace(
                 "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
                 """    if curl_options is None:
@@ -831,7 +886,8 @@ except Exception:
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        curl_options[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+        doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query").encode()
+        curl_options[CurlOpt.DOH_URL] = doh_ep
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
             )
@@ -900,45 +956,67 @@ EOF
 # Setup local DNS hosts spoofing
 SPOOF_DIR="$HOME/.local/share/gemini-spoof"
 HOSTS_FILE="$SPOOF_DIR/hosts"
-if [ ! -f "$HOSTS_FILE" ] || ! grep -q "89.150.59.128" "$HOSTS_FILE" 2>/dev/null; then
+if [ ! -f "$HOSTS_FILE" ] || ! grep -q "91.108.243.78" "$HOSTS_FILE" 2>/dev/null; then
     mkdir -p "$SPOOF_DIR"
-    cat << 'EOF_SPOOF' > "$HOSTS_FILE"
+
+    DYNAMIC_IP=""
+    if command -v curl >/dev/null 2>&1 && [ -n "$GEMINI_DOH_URL" ]; then
+        DYNAMIC_IP=$(curl -s -v --max-time 4 --doh-url "$GEMINI_DOH_URL" "https://gemini.google.com" 2>&1 | grep "Connected to gemini.google.com" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+    fi
+    PRIMARY_SPOOF_IP="${DYNAMIC_IP:-91.108.243.78}"
+
+    cat << EOF_SPOOF > "$HOSTS_FILE"
 127.0.0.1 localhost
 
-# Google AI Services (resolved by dns.comss.one)
-89.150.59.128 gemini.google.com
+# Google AI Services (unblocked SNI proxies)
+$PRIMARY_SPOOF_IP gemini.google.com
+91.108.243.78 gemini.google.com
 45.88.174.254 gemini.google.com
-89.150.59.128 aistudio.google.com
+$PRIMARY_SPOOF_IP aistudio.google.com
+91.108.243.78 aistudio.google.com
 45.88.174.254 aistudio.google.com
-89.150.59.128 generativelanguage.googleapis.com
+$PRIMARY_SPOOF_IP generativelanguage.googleapis.com
+91.108.243.78 generativelanguage.googleapis.com
 45.88.174.254 generativelanguage.googleapis.com
-89.150.59.128 aitestkitchen.withgoogle.com
+$PRIMARY_SPOOF_IP aitestkitchen.withgoogle.com
+91.108.243.78 aitestkitchen.withgoogle.com
 45.88.174.254 aitestkitchen.withgoogle.com
-89.150.59.128 aisandbox-pa.googleapis.com
+$PRIMARY_SPOOF_IP aisandbox-pa.googleapis.com
+91.108.243.78 aisandbox-pa.googleapis.com
 45.88.174.254 aisandbox-pa.googleapis.com
-89.150.59.128 webchannel-alkalimakersuite-pa.clients6.google.com
+$PRIMARY_SPOOF_IP webchannel-alkalimakersuite-pa.clients6.google.com
+91.108.243.78 webchannel-alkalimakersuite-pa.clients6.google.com
 45.88.174.254 webchannel-alkalimakersuite-pa.clients6.google.com
-89.150.59.128 alkalimakersuite-pa.clients6.google.com
+$PRIMARY_SPOOF_IP alkalimakersuite-pa.clients6.google.com
+91.108.243.78 alkalimakersuite-pa.clients6.google.com
 45.88.174.254 alkalimakersuite-pa.clients6.google.com
-89.150.59.128 assistant-s3-pa.googleapis.com
+$PRIMARY_SPOOF_IP assistant-s3-pa.googleapis.com
+91.108.243.78 assistant-s3-pa.googleapis.com
 45.88.174.254 assistant-s3-pa.googleapis.com
-89.150.59.128 proactivebackend-pa.googleapis.com
+$PRIMARY_SPOOF_IP proactivebackend-pa.googleapis.com
+91.108.243.78 proactivebackend-pa.googleapis.com
 45.88.174.254 proactivebackend-pa.googleapis.com
-89.150.59.128 robinfrontend-pa.googleapis.com
+$PRIMARY_SPOOF_IP robinfrontend-pa.googleapis.com
+91.108.243.78 robinfrontend-pa.googleapis.com
 45.88.174.254 robinfrontend-pa.googleapis.com
 64.233.163.94 o.pki.goog
-89.150.59.128 labs.google
+$PRIMARY_SPOOF_IP labs.google
+91.108.243.78 labs.google
 45.88.174.254 labs.google
-89.150.59.128 notebooklm.google.com
+$PRIMARY_SPOOF_IP notebooklm.google.com
+91.108.243.78 notebooklm.google.com
 45.88.174.254 notebooklm.google.com
-89.150.59.128 jules.google.com
+$PRIMARY_SPOOF_IP jules.google.com
+91.108.243.78 jules.google.com
 45.88.174.254 jules.google.com
-89.150.59.128 stitch.withgoogle.com
+$PRIMARY_SPOOF_IP stitch.withgoogle.com
+91.108.243.78 stitch.withgoogle.com
 45.88.174.254 stitch.withgoogle.com
 
 # Google Core & Auth
 142.251.1.84 accounts.google.com
-89.150.59.128 content-push.googleapis.com
+$PRIMARY_SPOOF_IP content-push.googleapis.com
+91.108.243.78 content-push.googleapis.com
 45.88.174.254 content-push.googleapis.com
 142.251.157.119 www.google.com
 142.251.1.139 google.com
@@ -997,8 +1075,39 @@ FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
 [ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
 
-DEFAULT_DOH_URL="https://xbox-dns.ru/dns-query"
+# Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
+detect_firefox_doh() {
+    local dirs=(
+        "$HOME/.mozilla/firefox"
+        "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox"
+        "$HOME/snap/firefox/common/.mozilla/firefox"
+    )
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        for pref in "$d"/*/prefs.js; do
+            [ -f "$pref" ] || continue
+            local uri
+            uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
+            if [ -n "$uri" ]; then
+                echo "$uri"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
+    DETECTED_DOH=$(detect_firefox_doh || true)
+    if [ -n "$DETECTED_DOH" ]; then
+        CUSTOM_DOH_URL="$DETECTED_DOH"
+    else
+        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+    fi
+fi
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.comss.one/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
+export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
 
 MODEL_ARG=""
@@ -1029,45 +1138,67 @@ done
 # 1. Ensure local hosts file and bwrap containerization for DNS spoofing
 SPOOF_DIR="$HOME/.local/share/gemini-spoof"
 HOSTS_FILE="$SPOOF_DIR/hosts"
-if [ ! -f "$HOSTS_FILE" ] || ! grep -q "89.150.59.128" "$HOSTS_FILE" 2>/dev/null; then
+if [ ! -f "$HOSTS_FILE" ] || ! grep -q "91.108.243.78" "$HOSTS_FILE" 2>/dev/null; then
     mkdir -p "$SPOOF_DIR"
-    cat << 'EOF_SPOOF' > "$HOSTS_FILE"
+
+    DYNAMIC_IP=""
+    if command -v curl >/dev/null 2>&1 && [ -n "$GEMINI_DOH_URL" ]; then
+        DYNAMIC_IP=$(curl -s -v --max-time 4 --doh-url "$GEMINI_DOH_URL" "https://gemini.google.com" 2>&1 | grep "Connected to gemini.google.com" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+    fi
+    PRIMARY_SPOOF_IP="${DYNAMIC_IP:-91.108.243.78}"
+
+    cat << EOF_SPOOF > "$HOSTS_FILE"
 127.0.0.1 localhost
 
-# Google AI Services (resolved by dns.comss.one)
-89.150.59.128 gemini.google.com
+# Google AI Services (unblocked SNI proxies)
+$PRIMARY_SPOOF_IP gemini.google.com
+91.108.243.78 gemini.google.com
 45.88.174.254 gemini.google.com
-89.150.59.128 aistudio.google.com
+$PRIMARY_SPOOF_IP aistudio.google.com
+91.108.243.78 aistudio.google.com
 45.88.174.254 aistudio.google.com
-89.150.59.128 generativelanguage.googleapis.com
+$PRIMARY_SPOOF_IP generativelanguage.googleapis.com
+91.108.243.78 generativelanguage.googleapis.com
 45.88.174.254 generativelanguage.googleapis.com
-89.150.59.128 aitestkitchen.withgoogle.com
+$PRIMARY_SPOOF_IP aitestkitchen.withgoogle.com
+91.108.243.78 aitestkitchen.withgoogle.com
 45.88.174.254 aitestkitchen.withgoogle.com
-89.150.59.128 aisandbox-pa.googleapis.com
+$PRIMARY_SPOOF_IP aisandbox-pa.googleapis.com
+91.108.243.78 aisandbox-pa.googleapis.com
 45.88.174.254 aisandbox-pa.googleapis.com
-89.150.59.128 webchannel-alkalimakersuite-pa.clients6.google.com
+$PRIMARY_SPOOF_IP webchannel-alkalimakersuite-pa.clients6.google.com
+91.108.243.78 webchannel-alkalimakersuite-pa.clients6.google.com
 45.88.174.254 webchannel-alkalimakersuite-pa.clients6.google.com
-89.150.59.128 alkalimakersuite-pa.clients6.google.com
+$PRIMARY_SPOOF_IP alkalimakersuite-pa.clients6.google.com
+91.108.243.78 alkalimakersuite-pa.clients6.google.com
 45.88.174.254 alkalimakersuite-pa.clients6.google.com
-89.150.59.128 assistant-s3-pa.googleapis.com
+$PRIMARY_SPOOF_IP assistant-s3-pa.googleapis.com
+91.108.243.78 assistant-s3-pa.googleapis.com
 45.88.174.254 assistant-s3-pa.googleapis.com
-89.150.59.128 proactivebackend-pa.googleapis.com
+$PRIMARY_SPOOF_IP proactivebackend-pa.googleapis.com
+91.108.243.78 proactivebackend-pa.googleapis.com
 45.88.174.254 proactivebackend-pa.googleapis.com
-89.150.59.128 robinfrontend-pa.googleapis.com
+$PRIMARY_SPOOF_IP robinfrontend-pa.googleapis.com
+91.108.243.78 robinfrontend-pa.googleapis.com
 45.88.174.254 robinfrontend-pa.googleapis.com
 64.233.163.94 o.pki.goog
-89.150.59.128 labs.google
+$PRIMARY_SPOOF_IP labs.google
+91.108.243.78 labs.google
 45.88.174.254 labs.google
-89.150.59.128 notebooklm.google.com
+$PRIMARY_SPOOF_IP notebooklm.google.com
+91.108.243.78 notebooklm.google.com
 45.88.174.254 notebooklm.google.com
-89.150.59.128 jules.google.com
+$PRIMARY_SPOOF_IP jules.google.com
+91.108.243.78 jules.google.com
 45.88.174.254 jules.google.com
-89.150.59.128 stitch.withgoogle.com
+$PRIMARY_SPOOF_IP stitch.withgoogle.com
+91.108.243.78 stitch.withgoogle.com
 45.88.174.254 stitch.withgoogle.com
 
 # Google Core & Auth
 142.251.1.84 accounts.google.com
-89.150.59.128 content-push.googleapis.com
+$PRIMARY_SPOOF_IP content-push.googleapis.com
+91.108.243.78 content-push.googleapis.com
 45.88.174.254 content-push.googleapis.com
 142.251.157.119 www.google.com
 142.251.1.139 google.com

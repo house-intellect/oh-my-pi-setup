@@ -8,8 +8,39 @@ FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
 [ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
 
-DEFAULT_DOH_URL="https://xbox-dns.ru/dns-query"
+# Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
+detect_firefox_doh() {
+    local dirs=(
+        "$HOME/.mozilla/firefox"
+        "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox"
+        "$HOME/snap/firefox/common/.mozilla/firefox"
+    )
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        for pref in "$d"/*/prefs.js; do
+            [ -f "$pref" ] || continue
+            local uri
+            uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
+            if [ -n "$uri" ]; then
+                echo "$uri"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
+    DETECTED_DOH=$(detect_firefox_doh || true)
+    if [ -n "$DETECTED_DOH" ]; then
+        CUSTOM_DOH_URL="$DETECTED_DOH"
+    else
+        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+    fi
+fi
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.comss.one/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
+export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
 
 MODEL_ARG=""
@@ -40,45 +71,67 @@ done
 # 1. Ensure local hosts file and bwrap containerization for DNS spoofing
 SPOOF_DIR="$HOME/.local/share/gemini-spoof"
 HOSTS_FILE="$SPOOF_DIR/hosts"
-if [ ! -f "$HOSTS_FILE" ] || ! grep -q "89.150.59.128" "$HOSTS_FILE" 2>/dev/null; then
+if [ ! -f "$HOSTS_FILE" ] || ! grep -q "91.108.243.78" "$HOSTS_FILE" 2>/dev/null; then
     mkdir -p "$SPOOF_DIR"
-    cat << 'EOF_SPOOF' > "$HOSTS_FILE"
+
+    DYNAMIC_IP=""
+    if command -v curl >/dev/null 2>&1 && [ -n "$GEMINI_DOH_URL" ]; then
+        DYNAMIC_IP=$(curl -s -v --max-time 4 --doh-url "$GEMINI_DOH_URL" "https://gemini.google.com" 2>&1 | grep "Connected to gemini.google.com" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+    fi
+    PRIMARY_SPOOF_IP="${DYNAMIC_IP:-91.108.243.78}"
+
+    cat << EOF_SPOOF > "$HOSTS_FILE"
 127.0.0.1 localhost
 
-# Google AI Services (resolved by dns.comss.one)
-89.150.59.128 gemini.google.com
+# Google AI Services (unblocked SNI proxies)
+$PRIMARY_SPOOF_IP gemini.google.com
+91.108.243.78 gemini.google.com
 45.88.174.254 gemini.google.com
-89.150.59.128 aistudio.google.com
+$PRIMARY_SPOOF_IP aistudio.google.com
+91.108.243.78 aistudio.google.com
 45.88.174.254 aistudio.google.com
-89.150.59.128 generativelanguage.googleapis.com
+$PRIMARY_SPOOF_IP generativelanguage.googleapis.com
+91.108.243.78 generativelanguage.googleapis.com
 45.88.174.254 generativelanguage.googleapis.com
-89.150.59.128 aitestkitchen.withgoogle.com
+$PRIMARY_SPOOF_IP aitestkitchen.withgoogle.com
+91.108.243.78 aitestkitchen.withgoogle.com
 45.88.174.254 aitestkitchen.withgoogle.com
-89.150.59.128 aisandbox-pa.googleapis.com
+$PRIMARY_SPOOF_IP aisandbox-pa.googleapis.com
+91.108.243.78 aisandbox-pa.googleapis.com
 45.88.174.254 aisandbox-pa.googleapis.com
-89.150.59.128 webchannel-alkalimakersuite-pa.clients6.google.com
+$PRIMARY_SPOOF_IP webchannel-alkalimakersuite-pa.clients6.google.com
+91.108.243.78 webchannel-alkalimakersuite-pa.clients6.google.com
 45.88.174.254 webchannel-alkalimakersuite-pa.clients6.google.com
-89.150.59.128 alkalimakersuite-pa.clients6.google.com
+$PRIMARY_SPOOF_IP alkalimakersuite-pa.clients6.google.com
+91.108.243.78 alkalimakersuite-pa.clients6.google.com
 45.88.174.254 alkalimakersuite-pa.clients6.google.com
-89.150.59.128 assistant-s3-pa.googleapis.com
+$PRIMARY_SPOOF_IP assistant-s3-pa.googleapis.com
+91.108.243.78 assistant-s3-pa.googleapis.com
 45.88.174.254 assistant-s3-pa.googleapis.com
-89.150.59.128 proactivebackend-pa.googleapis.com
+$PRIMARY_SPOOF_IP proactivebackend-pa.googleapis.com
+91.108.243.78 proactivebackend-pa.googleapis.com
 45.88.174.254 proactivebackend-pa.googleapis.com
-89.150.59.128 robinfrontend-pa.googleapis.com
+$PRIMARY_SPOOF_IP robinfrontend-pa.googleapis.com
+91.108.243.78 robinfrontend-pa.googleapis.com
 45.88.174.254 robinfrontend-pa.googleapis.com
 64.233.163.94 o.pki.goog
-89.150.59.128 labs.google
+$PRIMARY_SPOOF_IP labs.google
+91.108.243.78 labs.google
 45.88.174.254 labs.google
-89.150.59.128 notebooklm.google.com
+$PRIMARY_SPOOF_IP notebooklm.google.com
+91.108.243.78 notebooklm.google.com
 45.88.174.254 notebooklm.google.com
-89.150.59.128 jules.google.com
+$PRIMARY_SPOOF_IP jules.google.com
+91.108.243.78 jules.google.com
 45.88.174.254 jules.google.com
-89.150.59.128 stitch.withgoogle.com
+$PRIMARY_SPOOF_IP stitch.withgoogle.com
+91.108.243.78 stitch.withgoogle.com
 45.88.174.254 stitch.withgoogle.com
 
 # Google Core & Auth
 142.251.1.84 accounts.google.com
-89.150.59.128 content-push.googleapis.com
+$PRIMARY_SPOOF_IP content-push.googleapis.com
+91.108.243.78 content-push.googleapis.com
 45.88.174.254 content-push.googleapis.com
 142.251.157.119 www.google.com
 142.251.1.139 google.com

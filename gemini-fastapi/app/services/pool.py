@@ -153,7 +153,7 @@ class GeminiClientPool(metaclass=Singleton):
                 env_doh = os.environ.get("GEMINI_DOH_URL")
                 if env_doh:
                     candidate_resolvers.append(env_doh)
-                for r in ["https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query", "https://1.1.1.1/dns-query"]:
+                for r in ["https://dns.comss.one/dns-query", "https://cloudflare-dns.com/dns-query"]:
                     if r not in candidate_resolvers:
                         candidate_resolvers.append(r)
 
