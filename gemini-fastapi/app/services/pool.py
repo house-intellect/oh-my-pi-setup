@@ -100,7 +100,7 @@ class GeminiClientPool(metaclass=Singleton):
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 

@@ -52,8 +52,15 @@ detect_firefox_doh() {
             local uri
             uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
             if [ -n "$uri" ]; then
-                echo "$uri"
-                return 0
+                case "$uri" in
+                    *xbox-dns*|*1.1.1.1*|*cloudflare*)
+                        continue
+                        ;;
+                    *)
+                        echo "$uri"
+                        return 0
+                        ;;
+                esac
             fi
         done
     done
@@ -65,10 +72,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.comss.one/dns-query}"
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 
@@ -352,7 +359,7 @@ if wrap_file.exists():
         try:
             from curl_cffi import CurlOpt
             import os
-            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query").encode()
+            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query").encode()
             if CurlOpt.DOH_URL not in self.curl_options:
                 self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
         except Exception:
@@ -508,7 +515,7 @@ if pool_file.exists():
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -801,7 +808,7 @@ for sp in sys.path:
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+            doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
             if isinstance(doh_ep, str):
                 doh_ep = doh_ep.encode()
             curl_opts[CurlOpt.DOH_URL] = doh_ep
@@ -832,7 +839,7 @@ except Exception:
         if "self.curl_options" not in txt:
             txt = txt.replace(
                 "self.kwargs = kwargs",
-                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                doh_ep = os.environ.get(\"GEMINI_DOH_URL\", \"https://dns.comss.one/dns-query\").encode()\n                self.curl_options = {CurlOpt.DOH_URL: doh_ep}\n            except Exception:\n                pass"
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                doh_ep = os.environ.get(\"GEMINI_DOH_URL\", \"https://dns.bezmezhau.com/dns-query\").encode()\n                self.curl_options = {CurlOpt.DOH_URL: doh_ep}\n            except Exception:\n                pass"
             )
             txt = txt.replace(
                 "verify=self.kwargs.get(\"verify\", True),",
@@ -878,7 +885,7 @@ except Exception:
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
     if utils_file.exists():
         utxt = utils_file.read_text()
-        if "dns.comss.one" not in utxt and "if curl_options:" in utxt:
+        if "dns.bezmezhau.com" not in utxt and "if curl_options:" in utxt:
             utxt = utxt.replace(
                 "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
                 """    if curl_options is None:
@@ -886,7 +893,7 @@ except Exception:
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query").encode()
+        doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query").encode()
         curl_options[CurlOpt.DOH_URL] = doh_ep
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
@@ -1089,8 +1096,15 @@ detect_firefox_doh() {
             local uri
             uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
             if [ -n "$uri" ]; then
-                echo "$uri"
-                return 0
+                case "$uri" in
+                    *xbox-dns*|*1.1.1.1*|*cloudflare*)
+                        continue
+                        ;;
+                    *)
+                        echo "$uri"
+                        return 0
+                        ;;
+                esac
             fi
         done
     done
@@ -1102,10 +1116,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.comss.one/dns-query}"
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"

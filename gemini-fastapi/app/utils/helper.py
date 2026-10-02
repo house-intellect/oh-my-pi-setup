@@ -205,7 +205,7 @@ async def save_url_to_tempfile(url: str, tempdir: Path | None = None) -> Path:
         try:
             from curl_cffi import CurlOpt
             import os
-            doh = os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")
+            doh = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
             if isinstance(doh, str):
                 doh = doh.encode()
             curl_opts[CurlOpt.DOH_URL] = doh

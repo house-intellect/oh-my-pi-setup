@@ -22,8 +22,15 @@ detect_firefox_doh() {
             local uri
             uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
             if [ -n "$uri" ]; then
-                echo "$uri"
-                return 0
+                case "$uri" in
+                    *xbox-dns*|*1.1.1.1*|*cloudflare*)
+                        continue
+                        ;;
+                    *)
+                        echo "$uri"
+                        return 0
+                        ;;
+                esac
             fi
         done
     done
@@ -35,10 +42,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.comss.one/dns-query}"
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
