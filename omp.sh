@@ -231,8 +231,6 @@ if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/mo
         echo "Error: Python executable for Gemini-FastAPI not found."
         exit 1
     fi
-
-    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     (
         cd "$FASTAPI_DIR"
         if [ -n "$BWRAP_CMD" ]; then

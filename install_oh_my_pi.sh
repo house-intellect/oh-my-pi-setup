@@ -79,9 +79,6 @@ DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 
-# Purge any stale desynchronized cookie caches to avoid Error 1097
-rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
-
 stop_running_stack() {
     echo "=== Checking AI Stack Backend (Port 8000) ==="
 
@@ -431,7 +428,7 @@ if wrap_file.exists():
 
 # 2. Patch app/services/pool.py (Prioritize Firefox cookies.sqlite, avoiding KWallet/SecretService popups)
 pool_file = fastapi_dir / "app" / "services" / "pool.py"
-if pool_file.exists():
+if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_text():
     ptxt = pool_file.read_text()
     if "clean_stale_gemini_cookie_caches" not in ptxt:
         ptxt = "import glob\nimport os\n\ndef clean_stale_gemini_cookie_caches():\n    for f in glob.glob(\"/tmp/gemini_webapi/.cached_cookies_*.json\"):\n        try:\n            os.remove(f)\n        except OSError:\n            pass\n\n" + ptxt
@@ -1245,8 +1242,6 @@ if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/mo
         echo "Error: Python executable for Gemini-FastAPI not found."
         exit 1
     fi
-
-    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     (
         cd "$FASTAPI_DIR"
         if [ -n "$BWRAP_CMD" ]; then

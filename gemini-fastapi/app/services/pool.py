@@ -37,7 +37,6 @@ class GeminiClientPool(metaclass=Singleton):
     """Pool of GeminiClient instances identified by unique ids."""
 
     def __init__(self) -> None:
-        clean_stale_gemini_cookie_caches()
         self._clients: list[GeminiClientWrapper] = []
         self._id_map: dict[str, GeminiClientWrapper] = {}
         self._round_robin: deque[GeminiClientWrapper] = deque()
@@ -52,34 +51,70 @@ class GeminiClientPool(metaclass=Singleton):
             )
         ):
             found_clients = []
-            try:
-                import rookiepy
-                for b_name in ["firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi"]:
-                    fn = getattr(rookiepy, b_name, None)
-                    if not fn:
-                        continue
-                    try:
-                        cookies = fn([".google.com"])
-                        cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"]}
-                        psid = cdict.get("__Secure-1PSID")
-                        psidts = cdict.get("__Secure-1PSIDTS")
-                        psidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
-                        if psid and psidts:
-                            found_clients.append(
-                                GeminiClientSettings(
-                                    id=f"auto-{b_name}",
-                                    secure_1psid=psid,
-                                    secure_1psidts=psidts,
-                                    secure_1psidcc=psidcc,
-                                    proxy=None,
-                                )
+            import json
+            dirs_to_check = [
+                Path(tempfile.gettempdir()) / "gemini_webapi",
+                Path("/tmp/gemini_webapi"),
+            ]
+            env_cpath = os.getenv("GEMINI_COOKIE_PATH")
+            if env_cpath:
+                dirs_to_check.append(Path(env_cpath))
+
+            cached_files = []
+            for d in dirs_to_check:
+                if d.exists():
+                    cached_files.extend(list(d.glob(".cached_cookies_*.json")))
+
+            if cached_files:
+                newest_cache = max(cached_files, key=lambda p: p.stat().st_mtime)
+                try:
+                    cdata = json.loads(newest_cache.read_text())
+                    cpsid = cdata.get("__Secure-1PSID")
+                    cpsidts = cdata.get("__Secure-1PSIDTS")
+                    cpsidcc = cdata.get("__Secure-1PSIDCC")
+                    if cpsid and cpsidts:
+                        found_clients.append(
+                            GeminiClientSettings(
+                                id="active-cached-session",
+                                secure_1psid=cpsid,
+                                secure_1psidts=cpsidts,
+                                secure_1psidcc=cpsidcc,
+                                proxy=None,
                             )
-                            logger.info(f"Loaded Google session cookies from {b_name}.")
-                            break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+                        )
+                        logger.info(f"Reusing active rotated session cookies from cache ({newest_cache.name}).")
+                except Exception as e:
+                    logger.debug(f"Failed to read existing cache {newest_cache}: {e}")
+
+            if not found_clients:
+                try:
+                    import rookiepy
+                    for b_name in ["firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi"]:
+                        fn = getattr(rookiepy, b_name, None)
+                        if not fn:
+                            continue
+                        try:
+                            cookies = fn([".google.com"])
+                            cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"]}
+                            psid = cdict.get("__Secure-1PSID")
+                            psidts = cdict.get("__Secure-1PSIDTS")
+                            psidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
+                            if psid and psidts:
+                                found_clients.append(
+                                    GeminiClientSettings(
+                                        id=f"auto-{b_name}",
+                                        secure_1psid=psid,
+                                        secure_1psidts=psidts,
+                                        secure_1psidcc=psidcc,
+                                        proxy=None,
+                                    )
+                                )
+                                logger.info(f"Loaded Google session cookies from {b_name}.")
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
 
             if found_clients:
                 clients_to_load = found_clients
