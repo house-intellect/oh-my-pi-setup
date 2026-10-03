@@ -129,8 +129,18 @@ class GeminiClientPool(metaclass=Singleton):
 
             import rookiepy
             browsers = ["firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi"]
-            fresh_cookies = None
-            source_browser = None
+
+            clients_to_update = [target_client] if target_client else list(self._clients)
+            if not clients_to_update:
+                new_client = GeminiClientWrapper(
+                    client_id="live-recovered",
+                    proxy=None,
+                )
+                self._clients.append(new_client)
+                self._id_map[new_client.id] = new_client
+                self._round_robin.append(new_client)
+                self._restart_locks[new_client.id] = asyncio.Lock()
+                clients_to_update = [new_client]
 
             for b_name in browsers:
                 fn = getattr(rookiepy, b_name, None)
@@ -142,77 +152,58 @@ class GeminiClientPool(metaclass=Singleton):
                     psid = cdict.get("__Secure-1PSID")
                     psidts = cdict.get("__Secure-1PSIDTS")
                     psidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
-                    if psid and psidts:
-                        fresh_cookies = {
-                            "__Secure-1PSID": psid,
-                            "__Secure-1PSIDTS": psidts,
-                            "__Secure-1PSIDCC": psidcc,
-                        }
-                        source_browser = b_name
-                        logger.info(f"Dynamically extracted fresh Google session cookies from {b_name}.")
-                        break
+                    if not (psid and psidts):
+                        continue
+
+                    logger.info(f"Testing candidate session cookies from {b_name}...")
+                    clean_stale_gemini_cookie_caches()
+
+                    candidate_success = False
+                    for client in clients_to_update:
+                        if not client:
+                            continue
+                        lock = self._restart_locks.setdefault(client.id, asyncio.Lock())
+                        async with lock:
+                            try:
+                                await client.close()
+                            except Exception:
+                                pass
+
+                            client._cookies.set("__Secure-1PSID", psid, domain=".google.com", secure=True)
+                            client._cookies.set("__Secure-1PSIDTS", psidts, domain=".google.com", secure=True)
+                            if psidcc:
+                                client._cookies.set("__Secure-1PSIDCC", psidcc, domain=".google.com", secure=True)
+
+                            client.client = None
+                            client.SNlM0e = None
+                            client._running = False
+
+                            clean_stale_gemini_cookie_caches()
+
+                            try:
+                                await client.init(
+                                    timeout=g_config.gemini.timeout,
+                                    watchdog_timeout=g_config.gemini.watchdog_timeout,
+                                    auto_refresh=g_config.gemini.auto_refresh,
+                                    verbose=g_config.gemini.verbose,
+                                    refresh_interval=g_config.gemini.refresh_interval,
+                                )
+                                if client.running():
+                                    logger.success(f"Client {client.id} successfully authenticated and recovered using {b_name} cookies!")
+                                    candidate_success = True
+                            except Exception as e:
+                                logger.warning(f"Browser {b_name} cookies failed to authenticate client {client.id}: {e}")
+
+                    if candidate_success:
+                        return True
+                    else:
+                        logger.warning(f"Cookies from {b_name} were unauthenticated or expired. Trying next browser...")
                 except Exception as e:
                     logger.debug(f"Failed to extract cookies from {b_name}: {e}")
                     continue
 
-            if not fresh_cookies:
-                logger.error("Dynamic cookie recovery failed: No valid browser session cookies found.")
-                return False
-
-            clean_stale_gemini_cookie_caches()
-
-            clients_to_update = [target_client] if target_client else list(self._clients)
-            if not clients_to_update:
-                new_client = GeminiClientWrapper(
-                    client_id=f"live-{source_browser}",
-                    secure_1psid=fresh_cookies["__Secure-1PSID"],
-                    secure_1psidts=fresh_cookies["__Secure-1PSIDTS"],
-                    secure_1psidcc=fresh_cookies.get("__Secure-1PSIDCC"),
-                    proxy=None,
-                )
-                self._clients.append(new_client)
-                self._id_map[new_client.id] = new_client
-                self._round_robin.append(new_client)
-                self._restart_locks[new_client.id] = asyncio.Lock()
-                clients_to_update = [new_client]
-
-            any_success = False
-            for client in clients_to_update:
-                if not client:
-                    continue
-                lock = self._restart_locks.setdefault(client.id, asyncio.Lock())
-                async with lock:
-                    try:
-                        await client.close()
-                    except Exception:
-                        pass
-
-                    client._cookies.set("__Secure-1PSID", fresh_cookies["__Secure-1PSID"], domain=".google.com", secure=True)
-                    client._cookies.set("__Secure-1PSIDTS", fresh_cookies["__Secure-1PSIDTS"], domain=".google.com", secure=True)
-                    if fresh_cookies.get("__Secure-1PSIDCC"):
-                        client._cookies.set("__Secure-1PSIDCC", fresh_cookies["__Secure-1PSIDCC"], domain=".google.com", secure=True)
-
-                    client.client = None
-                    client.SNlM0e = None
-                    client._running = False
-
-                    clean_stale_gemini_cookie_caches()
-
-                    try:
-                        await client.init(
-                            timeout=g_config.gemini.timeout,
-                            watchdog_timeout=g_config.gemini.watchdog_timeout,
-                            auto_refresh=g_config.gemini.auto_refresh,
-                            verbose=g_config.gemini.verbose,
-                            refresh_interval=g_config.gemini.refresh_interval,
-                        )
-                        if client.running():
-                            logger.info(f"Client {client.id} successfully recovered using fresh cookies from {source_browser}.")
-                            any_success = True
-                    except Exception as e:
-                        logger.warning(f"Failed to re-initialize client {client.id} with fresh cookies: {e}")
-
-            return any_success
+            logger.error("Dynamic cookie recovery failed: No working browser session cookies found across all tested browsers.")
+            return False
 
     async def init(self) -> None:
         """Initialize all clients in the pool."""

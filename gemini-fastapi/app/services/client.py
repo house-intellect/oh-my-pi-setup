@@ -91,6 +91,7 @@ class GeminiClientWrapper(GeminiClient):
                 AccountStatus.ACCESS_TEMPORARILY_UNAVAILABLE,
                 AccountStatus.ACCOUNT_REJECTED_BY_GUARDIAN,
                 AccountStatus.GUARDIAN_APPROVAL_REQUIRED,
+                AccountStatus.UNAUTHENTICATED,
             ]
             if hasattr(self, "account_status") and self.account_status in hard_blocks:
                 self._running = False
@@ -115,6 +116,7 @@ class GeminiClientWrapper(GeminiClient):
             AccountStatus.ACCESS_TEMPORARILY_UNAVAILABLE,
             AccountStatus.ACCOUNT_REJECTED_BY_GUARDIAN,
             AccountStatus.GUARDIAN_APPROVAL_REQUIRED,
+            AccountStatus.UNAUTHENTICATED,
         ]
         if hasattr(self, "account_status") and self.account_status in hard_blocks:
             return False
