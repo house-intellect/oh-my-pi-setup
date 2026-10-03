@@ -1012,6 +1012,27 @@ def _is_missing_chat_error(exc: Exception) -> bool:
     return any(pattern.search(normalized) for pattern in _MISSING_CHAT_ERROR_PATTERNS)
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    from gemini_webapi.exceptions import AuthError
+    if isinstance(exc, AuthError):
+        return True
+    msg = " ".join(part for part in (str(exc), repr(exc)) if part).lower()
+    return any(
+        k in msg
+        for k in (
+            "autherror",
+            "failed to refresh cookies",
+            "status code 401",
+            "status code 403",
+            "status: 401",
+            "status: 403",
+            "unauthenticated",
+            "login_required",
+            "accounts.google.com",
+        )
+    )
+
+
 async def _send_with_internal_fallback(
     *,
     pool: GeminiClientPool,
@@ -1027,15 +1048,89 @@ async def _send_with_internal_fallback(
     temporary: bool,
 ) -> tuple[AsyncGenerator[ModelOutput] | ModelOutput, ChatSession, GeminiClientWrapper]:
     try:
-        output = await _send_with_split(
-            session,
-            current_input,
-            files=files,
-            stream=stream,
-            temporary=temporary,
-        )
-        return output, session, client
+        if stream:
+            gen = await _send_with_split(
+                session,
+                current_input,
+                files=files,
+                stream=True,
+                temporary=temporary,
+            )
+            try:
+                first_chunk = await gen.__anext__()
+            except StopAsyncIteration:
+                async def empty_gen():
+                    if False:
+                        yield
+                return empty_gen(), session, client
+
+            async def chained_gen():
+                yield first_chunk
+                async for c in gen:
+                    yield c
+
+            return chained_gen(), session, client
+        else:
+            output = await _send_with_split(
+                session,
+                current_input,
+                files=files,
+                stream=False,
+                temporary=temporary,
+            )
+            return output, session, client
     except Exception as exc:
+        if _is_auth_error(exc):
+            logger.warning(
+                f"Gemini authentication or session expiration error detected ({exc}). Attempting dynamic cookie recovery from browser..."
+            )
+            recovered = False
+            try:
+                recovered = await pool.reload_cookies_from_browser(client)
+            except Exception as r_err:
+                logger.error(f"Dynamic cookie recovery failed: {r_err}")
+
+            if recovered:
+                logger.info("Successfully refreshed cookies from browser. Retrying request in a fresh chat session.")
+                recovery_session = client.start_chat(model=model)
+                recovery_input, recovery_files = await _process_conversation_with_compaction(
+                    full_prepared_messages,
+                    tmp_dir,
+                    allow_summary_compaction=(g_config.gemini.oversized_context_strategy == OversizedContextStrategy.COMPACTION),
+                    reason="cookie recovery replay",
+                )
+                if stream:
+                    rec_gen = await _send_with_split(
+                        recovery_session,
+                        recovery_input,
+                        files=recovery_files,
+                        stream=True,
+                        temporary=temporary,
+                    )
+                    try:
+                        rec_first = await rec_gen.__anext__()
+                    except StopAsyncIteration:
+                        async def empty_rec_gen():
+                            if False:
+                                yield
+                        return empty_rec_gen(), recovery_session, client
+
+                    async def chained_rec():
+                        yield rec_first
+                        async for c in rec_gen:
+                            yield c
+
+                    return chained_rec(), recovery_session, client
+                else:
+                    output = await _send_with_split(
+                        recovery_session,
+                        recovery_input,
+                        files=recovery_files,
+                        stream=False,
+                        temporary=temporary,
+                    )
+                    return output, recovery_session, client
+
         should_fallback = reused_session
         if not should_fallback:
             raise
@@ -1338,6 +1433,7 @@ def _create_real_streaming_response(
         )
         yield f"data: {orjson.dumps(data).decode('utf-8')}\n\n"
         yield "data: [DONE]\n\n"
+        _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
@@ -1805,6 +1901,7 @@ def _create_responses_real_streaming_response(
         )
 
         yield "data: [DONE]\n\n"
+        _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
