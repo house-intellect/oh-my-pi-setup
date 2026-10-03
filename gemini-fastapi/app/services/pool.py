@@ -1,4 +1,5 @@
 import glob
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -51,7 +52,6 @@ class GeminiClientPool(metaclass=Singleton):
             )
         ):
             found_clients = []
-            import json
             dirs_to_check = [
                 Path(tempfile.gettempdir()) / "gemini_webapi",
                 Path("/tmp/gemini_webapi"),
@@ -69,9 +69,15 @@ class GeminiClientPool(metaclass=Singleton):
                 newest_cache = max(cached_files, key=lambda p: p.stat().st_mtime)
                 try:
                     cdata = json.loads(newest_cache.read_text())
-                    cpsid = cdata.get("__Secure-1PSID")
-                    cpsidts = cdata.get("__Secure-1PSIDTS")
-                    cpsidcc = cdata.get("__Secure-1PSIDCC")
+                    if isinstance(cdata, list):
+                        cdict = {c.get("name"): c.get("value") for c in cdata if isinstance(c, dict)}
+                    elif isinstance(cdata, dict):
+                        cdict = cdata
+                    else:
+                        cdict = {}
+                    cpsid = cdict.get("__Secure-1PSID")
+                    cpsidts = cdict.get("__Secure-1PSIDTS")
+                    cpsidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
                     if cpsid and cpsidts:
                         found_clients.append(
                             GeminiClientSettings(
@@ -122,7 +128,6 @@ class GeminiClientPool(metaclass=Singleton):
         if len(clients_to_load) == 0:
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
-        import os
         doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
