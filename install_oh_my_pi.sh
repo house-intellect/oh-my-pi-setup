@@ -83,12 +83,19 @@ export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
 
 stop_running_stack() {
-    echo "=== Checking and Stopping Existing AI Stack Processes & Port Conflicts ==="
-    local ports=(8000 8080)
+    echo "=== Checking AI Stack Backend (Port 8000) ==="
+
+    # If an existing stack is already running healthy Gemini-FastAPI on port 8000, preserve it!
+    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
+        echo "✓ Healthy Gemini-FastAPI backend detected on port 8000. Preserving existing service."
+        return 0
+    fi
+
+    local ports=(8000)
     local found_occupying=0
     local announced_pids=""
 
-    # 1. Inspect required ports directly and notify the user
+    # 1. Inspect port 8000 directly
     for port in "${ports[@]}"; do
         local pids=""
         if command -v lsof >/dev/null 2>&1; then
@@ -104,8 +111,8 @@ stop_running_stack() {
                         cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
                     fi
                     [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
-                    echo "⚠️  Found process occupying required port $port: PID $pid ($cmd)"
-                    echo "   -> Terminating PID $pid to allow stack services to bind to port $port..."
+                    echo "⚠️  Found unresponsive process occupying required port $port: PID $pid ($cmd)"
+                    echo "   -> Terminating PID $pid to allow stack backend to bind to port $port..."
                     found_occupying=1
                     announced_pids="$announced_pids $pid"
                 fi
@@ -113,9 +120,9 @@ stop_running_stack() {
         fi
     done
 
-    # 2. Check known stack processes by pattern
+    # 2. Check stale gemini-fastapi run.py processes
     local pattern_pids
-    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py" 2>/dev/null || true)
     if [ -n "$pattern_pids" ]; then
         for pid in $pattern_pids; do
             case " $announced_pids " in
@@ -127,8 +134,8 @@ stop_running_stack() {
                             cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
                         fi
                         [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
-                        echo "⚠️  Found active previous stack instance: PID $pid ($cmd)"
-                        echo "   -> Terminating PID $pid to prevent version collisions..."
+                        echo "⚠️  Found stale gemini-fastapi instance: PID $pid ($cmd)"
+                        echo "   -> Terminating PID $pid..."
                         found_occupying=1
                         announced_pids="$announced_pids $pid"
                     fi
@@ -137,27 +144,23 @@ stop_running_stack() {
         done
     fi
 
-    # 3. Stop systemd services if present
+    # 3. Stop standalone gemini-fastapi.service if present (do not stop open-webui.service)
     if command -v systemctl >/dev/null 2>&1; then
-        for srv in open-webui.service gemini-fastapi.service; do
-            if systemctl --user is-active "$srv" >/dev/null 2>&1; then
-                echo "⚠️  Found active systemd user service: $srv"
-                echo "   -> Stopping $srv so stack can manage ports ${ports[*]}..."
-                systemctl --user stop "$srv" 2>/dev/null || true
-                found_occupying=1
-            fi
-        done
+        if systemctl --user is-active gemini-fastapi.service >/dev/null 2>&1; then
+            echo "⚠️  Found active standalone gemini-fastapi.service"
+            echo "   -> Stopping gemini-fastapi.service..."
+            systemctl --user stop gemini-fastapi.service 2>/dev/null || true
+            found_occupying=1
+        fi
     fi
 
     if [ "$found_occupying" -eq 0 ]; then
-        echo "✓ Required ports (${ports[*]}) are free. No conflicting processes detected."
+        echo "✓ Port 8000 is free."
         return 0
     fi
 
-    # 4. Terminate with SIGTERM
+    # 4. Terminate stale fastapi with SIGTERM
     pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -TERM -f "open-webui serve" 2>/dev/null || true
-    pkill -TERM -f "open_webui" 2>/dev/null || true
 
     for port in "${ports[@]}"; do
         if command -v fuser >/dev/null 2>&1; then
@@ -174,7 +177,7 @@ stop_running_stack() {
 
     local wait_count=0
     while [ $wait_count -lt 5 ]; do
-        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1; then
             sleep 1
             wait_count=$((wait_count + 1))
         else
@@ -196,8 +199,6 @@ stop_running_stack() {
         fi
     done
     pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -9 -f "open-webui serve" 2>/dev/null || true
-    pkill -9 -f "open_webui" 2>/dev/null || true
     sleep 1
 
     echo "✓ Conflicting processes terminated. Ports (${ports[*]}) are now free."
