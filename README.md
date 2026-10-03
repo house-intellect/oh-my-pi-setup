@@ -72,13 +72,13 @@ Once installed, use the generated `~/omp.sh` launcher. It automatically starts `
 ```
 
 ### Selecting Models
-The default model is `gemini-fastapi:gemini-3.8-flash`. You can also target thinking and pro models:
+The default model is `gemini-fastapi:gemini-flash`. You can also target pro/reasoning models:
 ```bash
-# Enable extended thinking process:
+# Enable reasoning / pro model:
 ~/omp.sh -t -p "Explain how quantum computers factor primes step by step"
 
 # Target specific model:
-~/omp.sh -m gemini-3.1-pro -p "Explain quantum entanglement in 2 sentences"
+~/omp.sh -m gemini-pro -p "Explain quantum entanglement in 2 sentences"
 
 # List dynamically available models:
 ~/omp.sh -l
@@ -101,8 +101,8 @@ Configurations are stored in `~/.omp/agent/` (and mirrored to `~/.pi/agent/`):
       "api": "openai-completions",
       "models": [
         {
-          "id": "gemini-3.8-flash",
-          "name": "Gemini 3.8 Flash (Local)",
+          "id": "gemini-flash",
+          "name": "Gemini Flash (Local)",
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -110,8 +110,8 @@ Configurations are stored in `~/.omp/agent/` (and mirrored to `~/.pi/agent/`):
           "maxTokens": 65536
         },
         {
-          "id": "gemini-extended-thinking",
-          "name": "Gemini Extended Thinking (Local)",
+          "id": "gemini-pro",
+          "name": "Gemini Pro (Local)",
           "reasoning": true,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -119,17 +119,8 @@ Configurations are stored in `~/.omp/agent/` (and mirrored to `~/.pi/agent/`):
           "maxTokens": 65536
         },
         {
-          "id": "thinking",
-          "name": "Gemini Thinking Alias (Local)",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        },
-        {
-          "id": "gemini-3.1-pro",
-          "name": "Gemini 3.1 Pro (Local)",
+          "id": "gemini-flash-lite",
+          "name": "Gemini Flash-Lite (Local)",
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -144,7 +135,7 @@ Configurations are stored in `~/.omp/agent/` (and mirrored to `~/.pi/agent/`):
 
 ### Default Agent Config (`~/.omp/agent/config.yml`)
 ```yaml
-model: "gemini-fastapi:gemini-3.8-flash"
+model: "gemini-fastapi:gemini-flash"
 ```
 
 ---

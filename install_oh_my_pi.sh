@@ -309,10 +309,10 @@ else
     echo "Installing required Python packages..."
     if [ -d "$SCRIPT_DIR/wheels" ]; then
         "$PIP_EXEC" install --no-index --find-links="$SCRIPT_DIR/wheels" \
-            fastapi "uvicorn[standard]" curl_cffi gemini-webapi==2.0.0 rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
+            fastapi "uvicorn[standard]" curl_cffi "gemini-webapi>=2.1.1" rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
     fi
     "$PIP_EXEC" install --upgrade pip setuptools wheel 2>/dev/null || true
-    "$PIP_EXEC" install fastapi "uvicorn[standard]" curl_cffi gemini-webapi==2.0.0 rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
+    "$PIP_EXEC" install fastapi "uvicorn[standard]" curl_cffi "gemini-webapi>=2.1.1" rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
 fi
 
 echo "=== [4/5] Applying Geoblock & Keyring-Free Patches ==="
@@ -573,7 +573,7 @@ if pool_file.exists():
                         candidate_resolvers.append(r)
 
                 initialized = False
-                for b_name in ["chrome", "firefox", "chromium", "brave"]:
+                for b_name in ["firefox", "chrome", "chromium", "brave"]:
                     if initialized:
                         break
                     fn = getattr(rookiepy, b_name, None)
@@ -672,59 +672,7 @@ if cfg_py.exists():
 chat_py = fastapi_dir / "app" / "server" / "chat.py"
 if chat_py.exists():
     ctext = chat_py.read_text()
-    if "gemini-3.8-flash" not in ctext:
-        old_fn = """def _get_model_by_name(name: str) -> Model:
-    \"\"\"Retrieve a Model instance by name.\"\"\"
-    strategy = g_config.gemini.model_strategy
-    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
-    if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
-
-    if strategy == "overwrite":
-        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
-
-    return Model.from_name(name)"""
-        new_fn = """MODEL_ALIASES = {
-    "gemini-3.8-flash": "gemini-3-flash",
-    "3.8-flash": "gemini-3-flash",
-    "gemini-3.5-flash-lite": "gemini-3-flash",
-    "gemini-3.1-pro": "gemini-3-pro",
-    "gemini-extended-thinking": "gemini-3-flash-thinking",
-    "gemini-3.7-flash": "gemini-3-flash",
-    "gemini-3.7-pro": "gemini-3-pro",
-    "gemini-3-flash": "gemini-3-flash",
-    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
-    "gemini-3-pro": "gemini-3-pro",
-    "flash": "gemini-3-flash",
-    "thinking": "gemini-3-flash-thinking",
-    "pro": "gemini-3-pro",
-    "gemini-flash": "gemini-3-flash",
-    "gemini-pro": "gemini-3-pro",
-    "gpt-4o": "gemini-3-flash",
-    "gpt-4": "gemini-3-pro",
-}
-
-def _get_model_by_name(name: str) -> Model:
-    strategy = g_config.gemini.model_strategy
-    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
-
-    if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
-
-    resolved_name = MODEL_ALIASES.get(name, name)
-    if resolved_name in custom_models:
-        return Model.from_dict(custom_models[resolved_name].model_dump())
-
-    if strategy == "overwrite":
-        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
-
-    try:
-        return Model.from_name(resolved_name)
-    except Exception:
-        return Model.BASIC_FLASH"""
-        if old_fn in ctext:
-            ctext = ctext.replace(old_fn, new_fn)
 
     if "_throttle_request" not in ctext:
         rate_code = """import asyncio
@@ -914,8 +862,8 @@ cat << 'EOF' > "$HOME/.omp/agent/models.json"
       "api": "openai-completions",
       "models": [
         {
-          "id": "gemini-3.8-flash",
-          "name": "Gemini 3.8 Flash (Local)",
+          "id": "gemini-flash",
+          "name": "Gemini Flash (Local)",
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -923,8 +871,8 @@ cat << 'EOF' > "$HOME/.omp/agent/models.json"
           "maxTokens": 65536
         },
         {
-          "id": "gemini-extended-thinking",
-          "name": "Gemini Extended Thinking (Local)",
+          "id": "gemini-pro",
+          "name": "Gemini Pro (Local)",
           "reasoning": true,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -932,17 +880,8 @@ cat << 'EOF' > "$HOME/.omp/agent/models.json"
           "maxTokens": 65536
         },
         {
-          "id": "thinking",
-          "name": "Gemini Thinking Alias (Local)",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        },
-        {
-          "id": "gemini-3.1-pro",
-          "name": "Gemini 3.1 Pro (Local)",
+          "id": "gemini-flash-lite",
+          "name": "Gemini Flash-Lite (Local)",
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -958,7 +897,7 @@ cp "$HOME/.omp/agent/models.json" "$HOME/.pi/agent/models.json"
 
 # Write config.yml default model configuration
 cat << 'EOF' > "$HOME/.omp/agent/config.yml"
-model: "gemini-fastapi:gemini-3.8-flash"
+model: "gemini-fastapi:gemini-flash"
 EOF
 # Setup local DNS hosts spoofing
 SPOOF_DIR="$HOME/.local/share/gemini-spoof"
@@ -1131,7 +1070,7 @@ EXTRA_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         -t|--thinking)
-            MODEL_ARG="gemini-extended-thinking"
+            MODEL_ARG="gemini-pro"
             shift
             ;;
         -m|--model)
@@ -1365,7 +1304,7 @@ if [ ! -x "$BIN_DIR/omp" ]; then
 fi
 
 # 5. Execute omp (defaulting to local gemini-fastapi provider)
-MODEL_ARG="${MODEL_ARG:-gemini-3.8-flash}"
+MODEL_ARG="${MODEL_ARG:-gemini-flash}"
 if [ -n "$BWRAP_CMD" ]; then
     exec $BWRAP_CMD "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 else

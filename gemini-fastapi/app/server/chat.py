@@ -806,62 +806,39 @@ def _instructions_to_messages(
     return instruction_messages
 
 
-MODEL_ALIASES = {
-    # Live Gemini Web UI names & aliases
-    "gemini-3.8-flash": "gemini-3-flash",
-    "3.8-flash": "gemini-3-flash",
-    "3.8-Flash": "gemini-3-flash",
-    "gemini-3.5-flash-lite": "gemini-3-flash",
-    "3.5-flash-lite": "gemini-3-flash",
-    "3.5-Flash-Lite": "gemini-3-flash",
-    "gemini-3.1-pro": "gemini-3-pro",
-    "3.1-pro": "gemini-3-pro",
-    "3.1-Pro": "gemini-3-pro",
-    "gemini-extended-thinking": "gemini-3-flash-thinking",
-    "extended-thinking": "gemini-3-flash-thinking",
-    "Extended thinking": "gemini-3-flash-thinking",
-    "gemini-3.7-flash": "gemini-3-flash",
-    "gemini-3.7-pro": "gemini-3-pro",
-    "gemini-3-flash": "gemini-3-flash",
-    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
-    "gemini-3-pro": "gemini-3-pro",
-    "flash": "gemini-3-flash",
-    "thinking": "gemini-3-flash-thinking",
-    "pro": "gemini-3-pro",
-    "gemini-flash": "gemini-3-flash",
-    "gemini-thinking": "gemini-3-flash-thinking",
-    "gemini-pro": "gemini-3-pro",
-    "gpt-4o": "gemini-3-flash",
-    "gpt-4": "gemini-3-pro",
-    "gpt-3.5-turbo": "gemini-3-flash",
-}
-
-def _get_model_by_name(name: str) -> Model:
-    """Retrieve a Model instance by name."""
+def _get_model_by_name(name: str) -> Any:
+    """Retrieve an AvailableModel or Model instance by name."""
     strategy = g_config.gemini.model_strategy
     custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
     if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
+        return custom_models[name]
 
-    resolved_name = MODEL_ALIASES.get(name, name)
-    if resolved_name in custom_models:
-        return Model.from_dict(custom_models[resolved_name].model_dump())
+    pool = GeminiClientPool()
+    for client in pool._clients:
+        if client.running():
+            try:
+                return client._resolve_model_by_name(name)
+            except Exception:
+                pass
 
-    if strategy == "overwrite":
-        raise ValueError(f"Model '{name}' not found in custom models (strategy='overwrite').")
+    target = (name or "").lower().strip()
+    for m in Model:
+        if m == Model.UNSPECIFIED:
+            continue
+        if (
+            m.model_name.lower() == target
+            or m.name.lower() == target.replace("-", "_")
+            or getattr(m, "model_id", "").lower() == target
+        ):
+            return m
 
-    try:
-        return Model.from_name(resolved_name)
-    except Exception:
-        # Fallback to BASIC_FLASH if unknown
-        return Model.BASIC_FLASH
+    return Model.BASIC_FLASH
 
 
 def _get_available_models() -> list[ModelData]:
-    """Return a clean list of available models based on configuration strategy."""
+    """Return only real models provided by the webapi-proxy (no ghost models or twins)."""
     now = int(datetime.now(tz=UTC).timestamp())
-    strategy = g_config.gemini.model_strategy
     models_data = []
 
     custom_models = [m for m in g_config.gemini.models if m.model_name]
@@ -874,24 +851,37 @@ def _get_available_models() -> list[ModelData]:
             )
         )
 
-    # Clean, distinct primary models matching Web UI
-    priority_aliases = [
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-pro",
-        "gemini-extended-thinking",
-        "flash",
-        "thinking",
-        "pro",
-    ]
-    for a in priority_aliases:
-        models_data.append(
-            ModelData(
-                id=a,
-                created=now,
-                owned_by="gemini-web",
-            )
-        )
+    discovered_names = set()
+    pool = GeminiClientPool()
+    for client in pool._clients:
+        if client.running():
+            m_list = client.list_models()
+            if m_list:
+                for m in m_list:
+                    m_name = getattr(m, "model_name", None) or getattr(m, "name", None)
+                    if m_name and m_name not in discovered_names:
+                        discovered_names.add(m_name)
+                        models_data.append(
+                            ModelData(
+                                id=m_name,
+                                created=now,
+                                owned_by="gemini-web",
+                            )
+                        )
+                if discovered_names:
+                    break
+
+    if not discovered_names:
+        for m in [Model.BASIC_FLASH, Model.BASIC_PRO, Model.BASIC_LITE]:
+            if m.model_name not in discovered_names:
+                discovered_names.add(m.model_name)
+                models_data.append(
+                    ModelData(
+                        id=m.model_name,
+                        created=now,
+                        owned_by="gemini-web",
+                    )
+                )
 
     return models_data
 
@@ -1348,6 +1338,7 @@ def _create_real_streaming_response(
         )
         yield f"data: {orjson.dumps(data).decode('utf-8')}\n\n"
         yield "data: [DONE]\n\n"
+        _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
@@ -1814,6 +1805,7 @@ def _create_responses_real_streaming_response(
         )
 
         yield "data: [DONE]\n\n"
+        _mark_response_completed()
         _mark_response_completed()
         _mark_response_completed()
 

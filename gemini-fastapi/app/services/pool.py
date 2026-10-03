@@ -39,11 +39,10 @@ class GeminiClientPool(metaclass=Singleton):
                 or "YOUR_SECURE" in str(clients_to_load[0].secure_1psid)
             )
         ):
-            # Prioritize Firefox first: reads cookies.sqlite directly without triggering OS keyring / KWallet / SecretService GUI prompts.
             found_clients = []
             try:
                 import rookiepy
-                for b_name in ["firefox"]:
+                for b_name in ["firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi"]:
                     fn = getattr(rookiepy, b_name, None)
                     if not fn:
                         continue
@@ -63,33 +62,10 @@ class GeminiClientPool(metaclass=Singleton):
                                     proxy=None,
                                 )
                             )
+                            logger.info(f"Loaded Google session cookies from {b_name}.")
+                            break
                     except Exception:
-                        pass
-
-                if not found_clients:
-                    for b_name in ["chrome", "chromium", "brave", "edge", "opera"]:
-                        fn = getattr(rookiepy, b_name, None)
-                        if not fn:
-                            continue
-                        try:
-                            cookies = fn([".google.com"])
-                            cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"]}
-                            psid = cdict.get("__Secure-1PSID")
-                            psidts = cdict.get("__Secure-1PSIDTS")
-                            psidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
-                            if psid and psidts:
-                                found_clients.append(
-                                    GeminiClientSettings(
-                                        id=f"auto-{b_name}",
-                                        secure_1psid=psid,
-                                        secure_1psidts=psidts,
-                                        secure_1psidcc=psidcc,
-                                        proxy=None,
-                                    )
-                                )
-                                break
-                        except Exception:
-                            continue
+                        continue
             except Exception:
                 pass
 
@@ -158,7 +134,7 @@ class GeminiClientPool(metaclass=Singleton):
                         candidate_resolvers.append(r)
 
                 initialized = False
-                for b_name in ["chrome", "firefox", "chromium", "brave"]:
+                for b_name in ["firefox", "chrome", "chromium", "brave"]:
                     if initialized:
                         break
                     fn = getattr(rookiepy, b_name, None)

@@ -48,6 +48,11 @@ class GeminiClientWrapper(GeminiClient):
             except Exception:
                 pass
 
+    def running(self) -> bool:
+        if hasattr(self, "_running"):
+            return bool(self._running)
+        return True
+
     async def init(
         self,
         timeout: float = cast(float, _UNSET),

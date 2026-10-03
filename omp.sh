@@ -57,7 +57,7 @@ EXTRA_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         -t|--thinking)
-            MODEL_ARG="gemini-extended-thinking"
+            MODEL_ARG="gemini-pro"
             shift
             ;;
         -m|--model)
@@ -291,7 +291,7 @@ if [ ! -x "$BIN_DIR/omp" ]; then
 fi
 
 # 5. Execute omp (defaulting to local gemini-fastapi provider)
-MODEL_ARG="${MODEL_ARG:-gemini-3.8-flash}"
+MODEL_ARG="${MODEL_ARG:-gemini-flash}"
 if [ -n "$BWRAP_CMD" ]; then
     exec $BWRAP_CMD "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 else
