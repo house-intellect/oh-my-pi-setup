@@ -1029,8 +1029,13 @@ def _is_auth_error(exc: Exception) -> bool:
             "unauthenticated",
             "login_required",
             "accounts.google.com",
+            "not available for use",
+            "is not available for use",
+            "guest session",
+            "guest mode",
         )
     )
+
 
 
 async def _send_with_internal_fallback(

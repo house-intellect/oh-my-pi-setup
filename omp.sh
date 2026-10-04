@@ -196,7 +196,21 @@ PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
 
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
-if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+check_proxy_auth() {
+    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        return 1
+    fi
+    local probe
+    probe=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
+    if echo "$probe" | grep -q '"choices"'; then
+        return 0
+    fi
+    return 1
+}
+
+if ! check_proxy_auth; then
     # Check if port 8000 is occupied by an unresponsive or conflicting process
     local_pids=""
     if command -v lsof >/dev/null 2>&1; then
@@ -255,7 +269,7 @@ if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/mo
     READY=0
     printf "[omp.sh] Waiting for Gemini-FastAPI to initialize"
     for i in $(seq 1 120); do
-        if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        if check_proxy_auth; then
             READY=1
             echo " ready!"
             break

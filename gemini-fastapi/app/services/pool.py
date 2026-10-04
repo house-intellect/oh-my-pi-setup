@@ -159,11 +159,12 @@ class GeminiClientPool(metaclass=Singleton):
         """
         Dynamically extract fresh cookies from local browsers (prioritizing Firefox)
         and re-initialize the target client (or active pool clients) to recover from
-        expired sessions or 401 UNAUTHENTICATED errors.
+        expired sessions, guest mode, or 401 UNAUTHENTICATED errors.
         """
         async with self._recovery_lock:
-            if target_client and target_client.running():
-                return True
+            if target_client and target_client.running() and getattr(target_client, "_cookie_source", "") != "Guest":
+                if any(m.is_available for m in getattr(target_client, "models", []) if "flash" in m.model_name.lower()):
+                    return True
 
             clean_stale_gemini_cookie_caches()
 
@@ -228,9 +229,16 @@ class GeminiClientPool(metaclass=Singleton):
                                     verbose=g_config.gemini.verbose,
                                     refresh_interval=g_config.gemini.refresh_interval,
                                 )
-                                if client.running():
+                                if client.running() and getattr(client, "_cookie_source", "") != "Guest":
                                     logger.success(f"Client {client.id} successfully authenticated and recovered using {b_name} cookies!")
                                     candidate_success = True
+                                else:
+                                    logger.warning(f"Client {client.id} with {b_name} cookies fell back to Guest mode.")
+                                    try:
+                                        await client.close()
+                                    except Exception:
+                                        pass
+                                    clean_stale_gemini_cookie_caches()
                             except Exception as e:
                                 logger.warning(f"Browser {b_name} cookies failed to authenticate client {client.id}: {e}")
 
@@ -262,15 +270,24 @@ class GeminiClientPool(metaclass=Singleton):
                     pass
 
             if client.running():
-                success_count += 1
+                if getattr(client, "_cookie_source", "") == "Guest":
+                    logger.warning(f"Client {client.id} initialized in unauthenticated Guest mode. Discarding guest session.")
+                    try:
+                        await client.close()
+                    except Exception:
+                        pass
+                    clean_stale_gemini_cookie_caches()
+                else:
+                    success_count += 1
 
         if success_count == 0:
-            logger.warning("No clients initialized via existing cookies. Attempting dynamic cookie recovery from browser...")
+            logger.warning("No authenticated clients initialized via existing cookies. Attempting dynamic cookie recovery from browser...")
             if await self.reload_cookies_from_browser():
-                success_count = sum(1 for c in self._clients if c.running())
+                success_count = sum(1 for c in self._clients if c.running() and getattr(c, "_cookie_source", "") != "Guest")
 
         if success_count == 0:
             raise RuntimeError("Failed to initialize any Gemini clients")
+
 
     async def acquire(self, client_id: str | None = None) -> GeminiClientWrapper:
         """Return a healthy client by id or using round-robin."""
