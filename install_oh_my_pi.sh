@@ -1401,6 +1401,22 @@ chmod +x "$HOME/omp.sh"
 [ -d "$SCRIPT_DIR" ] && cp "$HOME/omp.sh" "$SCRIPT_DIR/omp.sh" && chmod +x "$SCRIPT_DIR/omp.sh"
 chmod +x "$BIN_DIR/omp"
 
+# Deploy bundled skills (e.g. vision skill)
+deploy_skills() {
+    local skills_base="$HOME/.agents/skills"
+    mkdir -p "$skills_base"
+
+    if [ -d "$SCRIPT_DIR/vision" ]; then
+        echo "   -> Deploying vision skill to $skills_base/vision..."
+        rm -rf "$skills_base/vision"
+        mkdir -p "$skills_base/vision"
+        cp -r "$SCRIPT_DIR/vision/"* "$skills_base/vision/"
+        chmod +x "$skills_base/vision/scripts/vision_tool.py" 2>/dev/null || true
+        echo "   -> vision skill deployed successfully."
+    fi
+}
+deploy_skills
+
 echo ""
 echo "=========================================================================="
 echo "Oh My Pi (OMP) with Gemini-FastAPI installed successfully!"

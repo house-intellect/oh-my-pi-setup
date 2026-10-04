@@ -149,6 +149,7 @@ tar -czvf oh-my-pi-offline.tar.gz \
     omp.sh \
     bin/omp \
     gemini-fastapi \
+    vision \
     README.md
 ```
 Transfer `oh-my-pi-offline.tar.gz` to any target machine, extract, and execute `./install_oh_my_pi.sh`.
