@@ -439,14 +439,13 @@ pool_file = fastapi_dir / "app" / "services" / "pool.py"
 if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_text():
     ptxt = pool_file.read_text()
     if "clean_stale_gemini_cookie_caches" not in ptxt:
-        ptxt = "import glob\nimport os\n\ndef clean_stale_gemini_cookie_caches():\n    for f in glob.glob(\"/tmp/gemini_webapi/.cached_cookies_*.json\"):\n        try:\n            os.remove(f)\n        except OSError:\n            pass\n\n" + ptxt
+        ptxt = "def clean_stale_gemini_cookie_caches():\n    pass\n\n" + ptxt
     if "GeminiClientSettings" not in ptxt:
         ptxt = ptxt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
     new_pool_code = """class GeminiClientPool(metaclass=Singleton):
     \"\"\"Pool of GeminiClient instances identified by unique ids.\"\"\"
 
     def __init__(self) -> None:
-        clean_stale_gemini_cookie_caches()
         self._clients: list[GeminiClientWrapper] = []
         self._id_map: dict[str, GeminiClientWrapper] = {}
         self._round_robin: deque[GeminiClientWrapper] = deque()
@@ -757,6 +756,7 @@ for sp in sys.path:
         txt = init_file.read_text()
         if "CurlOpt.DOH_URL" not in txt:
             doh_code = """try:
+    import os
     from curl_cffi import CurlOpt
     from curl_cffi.requests.session import BaseSession
 
@@ -840,6 +840,17 @@ except Exception:
                 "is_auth_cookie = cookie.name in [\"__Secure-1PSID\", \"__Secure-1PSIDTS\", \"__Secure-1PSIDCC\", \"__Secure-3PSID\", \"__Secure-3PSIDTS\", \"__Secure-3PSIDCC\", \"SIDCC\"]"
             )
             rot_file.write_text(rtxt)
+
+    # Patch get_access_token.py to accept curl_options and extra kwargs
+    tok_file = Path(f"{sp}/gemini_webapi/utils/get_access_token.py")
+    if tok_file.exists():
+        ttxt = tok_file.read_text()
+        if "curl_options: dict" not in ttxt:
+            ttxt = ttxt.replace(
+                "verify: bool = True,\n) -> InitSession:",
+                "verify: bool = True,\n    curl_options: dict | None = None,\n    **kwargs,\n) -> InitSession:"
+            )
+            tok_file.write_text(ttxt)
 
     # Patch curl_cffi/requests/utils.py to guarantee DoH on ALL curl requests
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
@@ -1222,20 +1233,70 @@ PYTHON_EXEC="$FASTAPI_DIR/.venv/bin/python"
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 check_proxy_auth() {
-    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
-        return 1
+    # 1. Quick check if port is serving HTTP /v1/models
+    if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        return 2  # Server not running / port closed
     fi
-    local probe
-    probe=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+
+    # 2. Probe gemini-flash directly with generous 15s timeout
+    local resp http_code body
+    resp=$(curl --noproxy "*" --max-time 15 -s -w "\nHTTP_STATUS:%{http_code}" -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
-    if echo "$probe" | grep -q '"choices"'; then
+    http_code=$(echo "$resp" | grep "HTTP_STATUS:" | cut -d':' -f2)
+    body=$(echo "$resp" | sed '/HTTP_STATUS:/d')
+
+    if echo "$body" | grep -q '"choices"'; then
+        return 0  # Authenticated and healthy
+    fi
+
+    # Check if timeout (000 or empty) - server is alive but network or model slow/warming up. Preserve instance!
+    if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+        echo "[omp.sh] ⚠️  Probe to gemini-flash timed out, but Gemini-FastAPI is active on port $FASTAPI_PORT. Preserving instance."
         return 0
     fi
-    return 1
+
+    # Explicit auth/guest/unavailable error
+    if [ "$http_code" = "401" ] || [ "$http_code" = "403" ] || \
+       echo "$body" | grep -iqE '("status":\s*(401|403|1016|1002)|unauthenticated|guest mode|guest session|not available for use|is not available for use|autherror|login_required)'; then
+        echo "[omp.sh] ⚠️  Gemini-FastAPI on port $FASTAPI_PORT returned unauthenticated / Guest mode error (HTTP $http_code)."
+        return 1  # Unauthenticated
+    fi
+
+    # Any other status: if /v1/models is alive, do not kill blindly
+    return 0
 }
 
-if ! check_proxy_auth; then
+check_proxy_auth
+auth_status=$?
+
+if [ $auth_status -eq 0 ]; then
+    # Server is active, authenticated, and healthy. Do not restart or kill.
+    :
+else
+    # If auth_status is 1 (confirmed unauthenticated/guest error):
+    # Only then terminate the dead/unauthenticated instance so a new one can be started.
+    if [ $auth_status -eq 1 ]; then
+        local_pids=""
+        if command -v lsof >/dev/null 2>&1; then
+            local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
+        elif command -v fuser >/dev/null 2>&1; then
+            local_pids=$(fuser "${FASTAPI_PORT}/tcp" 2>/dev/null || true)
+        fi
+        if [ -n "$local_pids" ]; then
+            for pid in $local_pids; do
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    echo "[omp.sh] Terminating unauthenticated Gemini-FastAPI instance: PID $pid..."
+                    kill -TERM "$pid" 2>/dev/null || true
+                    sleep 1
+                    if kill -0 "$pid" 2>/dev/null; then
+                        kill -9 "$pid" 2>/dev/null || true
+                    fi
+                fi
+            done
+        fi
+    fi
+
     # Check if port 8000 is occupied by an unresponsive or conflicting process
     local_pids=""
     if command -v lsof >/dev/null 2>&1; then
@@ -1293,8 +1354,8 @@ if ! check_proxy_auth; then
 
     READY=0
     printf "[omp.sh] Waiting for Gemini-FastAPI to initialize"
-    for i in $(seq 1 120); do
-        if check_proxy_auth; then
+    for i in $(seq 1 60); do
+        if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
             READY=1
             echo " ready!"
             break
@@ -1305,7 +1366,7 @@ if ! check_proxy_auth; then
     echo ""
 
     if [ $READY -eq 0 ]; then
-        echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT within 120 seconds."
+        echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT within 60 seconds."
         [ -f "$STACK_DIR/proxy_access.log" ] && tail -n 25 "$STACK_DIR/proxy_access.log"
         exit 1
     fi

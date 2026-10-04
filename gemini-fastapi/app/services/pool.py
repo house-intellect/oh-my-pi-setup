@@ -5,22 +5,8 @@ import tempfile
 from pathlib import Path
 
 def clean_stale_gemini_cookie_caches():
-    """Purge cached cookie files that cause Error 1097 desync or replay of revoked sessions."""
-    dirs_to_clean = [
-        Path(tempfile.gettempdir()) / "gemini_webapi",
-        Path("/tmp/gemini_webapi"),
-    ]
-    env_path = os.getenv("GEMINI_COOKIE_PATH")
-    if env_path:
-        dirs_to_clean.append(Path(env_path))
-
-    for cdir in dirs_to_clean:
-        if cdir.exists():
-            for f in cdir.glob(".cached_cookies_*.json"):
-                try:
-                    f.unlink(missing_ok=True)
-                except OSError:
-                    pass
+    """No-op: preserve active rotated session cookies in /tmp/gemini_webapi."""
+    pass
 
 import asyncio
 from collections import deque
@@ -32,6 +18,22 @@ from app.utils.config import GeminiClientSettings
 from app.utils.singleton import Singleton
 
 from .client import GeminiClientWrapper
+
+
+def _client_has_flash(client) -> bool:
+    if not client:
+        return False
+    try:
+        if hasattr(client, "list_models"):
+            models = client.list_models()
+            if any("flash" in getattr(m, "model_name", "").lower() for m in models):
+                return True
+        if hasattr(client, "models"):
+            if any("flash" in getattr(m, "model_name", "").lower() for m in getattr(client, "models", [])):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 class GeminiClientPool(metaclass=Singleton):
@@ -160,13 +162,12 @@ class GeminiClientPool(metaclass=Singleton):
         Dynamically extract fresh cookies from local browsers (prioritizing Firefox)
         and re-initialize the target client (or active pool clients) to recover from
         expired sessions, guest mode, or 401 UNAUTHENTICATED errors.
+        Candidate cookies are verified in an isolated test wrapper first to protect active sessions.
         """
         async with self._recovery_lock:
             if target_client and target_client.running() and getattr(target_client, "_cookie_source", "") != "Guest":
-                if any(m.is_available for m in getattr(target_client, "models", []) if "flash" in m.model_name.lower()):
+                if _client_has_flash(target_client):
                     return True
-
-            clean_stale_gemini_cookie_caches()
 
             import rookiepy
             browsers = ["firefox", "chrome", "chromium", "brave", "edge", "opera", "vivaldi"]
@@ -183,6 +184,15 @@ class GeminiClientPool(metaclass=Singleton):
                 self._restart_locks[new_client.id] = asyncio.Lock()
                 clients_to_update = [new_client]
 
+            import os
+            doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
+            curl_opts = {}
+            try:
+                from curl_cffi import CurlOpt
+                curl_opts[CurlOpt.DOH_URL] = doh_url.encode() if isinstance(doh_url, str) else doh_url
+            except Exception:
+                pass
+
             for b_name in browsers:
                 fn = getattr(rookiepy, b_name, None)
                 if not fn:
@@ -196,10 +206,40 @@ class GeminiClientPool(metaclass=Singleton):
                     if not (psid and psidts):
                         continue
 
-                    logger.info(f"Testing candidate session cookies from {b_name}...")
-                    clean_stale_gemini_cookie_caches()
+                    logger.info(f"Testing candidate session cookies from {b_name} in isolated client...")
+                    test_client = GeminiClientWrapper(
+                        client_id=f"verify-{b_name}",
+                        secure_1psid=psid,
+                        secure_1psidts=psidts,
+                        secure_1psidcc=psidcc,
+                        proxy=getattr(g_config.gemini, "proxy", None),
+                        curl_options=dict(curl_opts),
+                    )
+                    is_valid = False
+                    try:
+                        await test_client.init(
+                            timeout=g_config.gemini.timeout,
+                            watchdog_timeout=g_config.gemini.watchdog_timeout,
+                            auto_refresh=False,
+                            verbose=False,
+                        )
+                        if test_client.running() and getattr(test_client, "_cookie_source", "") != "Guest":
+                            if _client_has_flash(test_client):
+                                is_valid = True
+                    except Exception as e:
+                        logger.warning(f"Verification of {b_name} cookies failed: {e}")
+                        is_valid = False
+                    finally:
+                        try:
+                            await test_client.close()
+                        except Exception:
+                            pass
 
-                    candidate_success = False
+                    if not is_valid:
+                        logger.warning(f"Cookies from {b_name} were unauthenticated, expired, or lacked flash model. Trying next browser...")
+                        continue
+
+                    logger.success(f"Candidate session from {b_name} verified successfully! Updating pool clients...")
                     for client in clients_to_update:
                         if not client:
                             continue
@@ -219,8 +259,6 @@ class GeminiClientPool(metaclass=Singleton):
                             client.SNlM0e = None
                             client._running = False
 
-                            clean_stale_gemini_cookie_caches()
-
                             try:
                                 await client.init(
                                     timeout=g_config.gemini.timeout,
@@ -229,23 +267,11 @@ class GeminiClientPool(metaclass=Singleton):
                                     verbose=g_config.gemini.verbose,
                                     refresh_interval=g_config.gemini.refresh_interval,
                                 )
-                                if client.running() and getattr(client, "_cookie_source", "") != "Guest":
-                                    logger.success(f"Client {client.id} successfully authenticated and recovered using {b_name} cookies!")
-                                    candidate_success = True
-                                else:
-                                    logger.warning(f"Client {client.id} with {b_name} cookies fell back to Guest mode.")
-                                    try:
-                                        await client.close()
-                                    except Exception:
-                                        pass
-                                    clean_stale_gemini_cookie_caches()
+                                logger.success(f"Client {client.id} successfully recovered using {b_name} cookies!")
                             except Exception as e:
-                                logger.warning(f"Browser {b_name} cookies failed to authenticate client {client.id}: {e}")
+                                logger.warning(f"Failed to re-initialize client {client.id} with verified cookies: {e}")
 
-                    if candidate_success:
-                        return True
-                    else:
-                        logger.warning(f"Cookies from {b_name} were unauthenticated or expired. Trying next browser...")
+                    return True
                 except Exception as e:
                     logger.debug(f"Failed to extract cookies from {b_name}: {e}")
                     continue
@@ -271,12 +297,11 @@ class GeminiClientPool(metaclass=Singleton):
 
             if client.running():
                 if getattr(client, "_cookie_source", "") == "Guest":
-                    logger.warning(f"Client {client.id} initialized in unauthenticated Guest mode. Discarding guest session.")
+                    logger.warning(f"Client {client.id} initialized in unauthenticated Guest mode. Closing guest session.")
                     try:
                         await client.close()
                     except Exception:
                         pass
-                    clean_stale_gemini_cookie_caches()
                 else:
                     success_count += 1
 
