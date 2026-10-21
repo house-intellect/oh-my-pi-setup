@@ -28,9 +28,13 @@ class GeminiClientWrapper(GeminiClient):
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
+        doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query")
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
+        ca_bundle = os.environ.get("CURL_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
+        if ca_bundle and ("verify" not in kwargs or kwargs.get("verify") is True):
+            kwargs["verify"] = ca_bundle
+            self.verify = ca_bundle
         if secure_1psidcc := kwargs.get("secure_1psidcc"):
             self._cookies.set("__Secure-1PSIDCC", secure_1psidcc, domain=".google.com")
         self.curl_options = kwargs.get("curl_options")
@@ -38,6 +42,8 @@ class GeminiClientWrapper(GeminiClient):
             try:
                 from curl_cffi import CurlOpt
                 self.curl_options = {CurlOpt.DOH_URL: doh_endpoint}
+                if ca_bundle and hasattr(CurlOpt, "CAINFO"):
+                    self.curl_options[CurlOpt.CAINFO] = ca_bundle.encode() if isinstance(ca_bundle, str) else ca_bundle
             except Exception:
                 self.curl_options = {}
         elif isinstance(self.curl_options, dict):
@@ -45,6 +51,8 @@ class GeminiClientWrapper(GeminiClient):
                 from curl_cffi import CurlOpt
                 if CurlOpt.DOH_URL not in self.curl_options:
                     self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
+                if ca_bundle and hasattr(CurlOpt, "CAINFO") and CurlOpt.CAINFO not in self.curl_options:
+                    self.curl_options[CurlOpt.CAINFO] = ca_bundle.encode() if isinstance(ca_bundle, str) else ca_bundle
             except Exception:
                 pass
 

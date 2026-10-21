@@ -14,8 +14,32 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
-FASTAPI_PORT=8000
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
 BIN_DIR="$HOME/.local/bin"
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
 
 check_trash_execution() {
     local cwd_phys
@@ -72,10 +96,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.dns-ai.ru/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 
@@ -313,12 +337,13 @@ else
     PIP_EXEC="$FASTAPI_DIR/.venv/bin/pip"
     
     echo "Installing required Python packages..."
+    unset CC CXX CFLAGS LDFLAGS RUSTFLAGS
     if [ -d "$SCRIPT_DIR/wheels" ]; then
         "$PIP_EXEC" install --no-index --find-links="$SCRIPT_DIR/wheels" \
             fastapi "uvicorn[standard]" curl_cffi "gemini-webapi>=2.1.1" rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
     fi
     "$PIP_EXEC" install --upgrade pip setuptools wheel 2>/dev/null || true
-    "$PIP_EXEC" install fastapi "uvicorn[standard]" curl_cffi "gemini-webapi>=2.1.1" rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
+    "$PIP_EXEC" install --prefer-binary fastapi "uvicorn[standard]" curl_cffi "gemini-webapi>=2.1.1" rookiepy lmdb pydantic pydantic-settings pyyaml loguru orjson httptools 2>/dev/null || true
 fi
 
 echo "=== [4/5] Applying Geoblock & Keyring-Free Patches ==="
@@ -365,7 +390,7 @@ if wrap_file.exists():
         try:
             from curl_cffi import CurlOpt
             import os
-            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query").encode()
+            doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query").encode()
             if CurlOpt.DOH_URL not in self.curl_options:
                 self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
         except Exception:
@@ -520,7 +545,7 @@ if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_te
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -573,7 +598,7 @@ if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_te
                 env_doh = os.environ.get("GEMINI_DOH_URL")
                 if env_doh:
                     candidate_resolvers.append(env_doh)
-                for r in ["https://dns.bezmezhau.com/dns-query", "https://dns.comss.one/dns-query"]:
+                for r in ["https://dns.dns-ai.ru/dns-query", "https://dns.comss.one/dns-query"]:
                     if r not in candidate_resolvers:
                         candidate_resolvers.append(r)
 
@@ -768,7 +793,7 @@ for sp in sys.path:
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
+            doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query")
             if isinstance(doh_ep, str):
                 doh_ep = doh_ep.encode()
             curl_opts[CurlOpt.DOH_URL] = doh_ep
@@ -799,7 +824,7 @@ except Exception:
         if "self.curl_options" not in txt:
             txt = txt.replace(
                 "self.kwargs = kwargs",
-                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                doh_ep = os.environ.get(\"GEMINI_DOH_URL\", \"https://dns.bezmezhau.com/dns-query\").encode()\n                self.curl_options = {CurlOpt.DOH_URL: doh_ep}\n            except Exception:\n                pass"
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                doh_ep = os.environ.get(\"GEMINI_DOH_URL\", \"https://dns.dns-ai.ru/dns-query\").encode()\n                self.curl_options = {CurlOpt.DOH_URL: doh_ep}\n            except Exception:\n                pass"
             )
             txt = txt.replace(
                 "verify=self.kwargs.get(\"verify\", True),",
@@ -856,7 +881,7 @@ except Exception:
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
     if utils_file.exists():
         utxt = utils_file.read_text()
-        if "dns.bezmezhau.com" not in utxt and "if curl_options:" in utxt:
+        if "dns.dns-ai.ru" not in utxt and "if curl_options:" in utxt:
             utxt = utxt.replace(
                 "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
                 """    if curl_options is None:
@@ -864,7 +889,7 @@ except Exception:
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query").encode()
+        doh_ep = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query").encode()
         curl_options[CurlOpt.DOH_URL] = doh_ep
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
@@ -874,49 +899,147 @@ except Exception:
 
 echo "=== [5/5] Configuring Oh My Pi & Runner Script ==="
 
-# Write models.json to both ~/.omp/agent/ and ~/.pi/agent/
-cat << 'EOF' > "$HOME/.omp/agent/models.json"
-{
-  "providers": {
-    "gemini-fastapi": {
-      "name": "Gemini FastAPI (Local)",
-      "baseUrl": "http://127.0.0.1:8000/v1",
-      "apiKey": "sk-gemini-local",
-      "api": "openai-completions",
-      "models": [
-        {
-          "id": "gemini-flash",
-          "name": "Gemini Flash (Local)",
-          "reasoning": false,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        },
-        {
-          "id": "gemini-pro",
-          "name": "Gemini Pro (Local)",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        },
-        {
-          "id": "gemini-flash-lite",
-          "name": "Gemini Flash-Lite (Local)",
-          "reasoning": false,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        }
-      ]
-    }
+# Write models.json with automatic Strata detection to both ~/.omp/agent/ and ~/.pi/agent/
+"$PYTHON_EXEC" -c '
+import json, os, glob, urllib.request
+
+providers = {
+  "gemini-fastapi": {
+    "name": "Gemini FastAPI (Local)",
+    "baseUrl": "http://127.0.0.1:8000/v1",
+    "apiKey": "sk-gemini-local",
+    "api": "openai-completions",
+    "models": [
+      {
+        "id": "gemini-flash",
+        "name": "Gemini Flash (Local)",
+        "reasoning": False,
+        "input": ["text", "image"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 1048576,
+        "maxTokens": 65536
+      },
+      {
+        "id": "gemini-pro",
+        "name": "Gemini Pro (Local)",
+        "reasoning": True,
+        "input": ["text", "image"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 1048576,
+        "maxTokens": 65536
+      },
+      {
+        "id": "gemini-flash-lite",
+        "name": "Gemini Flash-Lite (Local)",
+        "reasoning": False,
+        "input": ["text", "image"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 1048576,
+        "maxTokens": 65536
+      }
+    ]
   }
 }
-EOF
-cp "$HOME/.omp/agent/models.json" "$HOME/.pi/agent/models.json"
+
+# Auto-detect Strata LLM Server
+strata_models = []
+strata_port = 8081
+
+# 1. Probe live endpoint
+try:
+    req = urllib.request.Request("http://127.0.0.1:8081/v1/models", headers={"User-Agent": "pi-agent"})
+    with urllib.request.urlopen(req, timeout=1.5) as resp:
+        mdata = json.loads(resp.read().decode())
+        for item in mdata.get("data", []):
+            if "id" in item:
+                strata_models.append(item["id"])
+except Exception:
+    pass
+
+# 2. Probe configurations on disk if endpoint not yet active
+if not strata_models:
+    search_patterns = [
+        "/media/*/*/Strata*/*.json",
+        "/media/*/*/Strata*/config*.json",
+        "/media/*/*/backup/Strata*/*.json",
+        os.path.expanduser("~/Strata*/*.json"),
+        os.path.expanduser("~/.config/strata*/**/*.json"),
+        os.path.expanduser("~/local-ai-stack/*strata*.json"),
+        "/opt/*strata*/*.json",
+    ]
+    for pattern in search_patterns:
+        for f in glob.glob(pattern, recursive=True):
+            if any(skip in f for skip in ["/bench/", "/results/", "/tests/", "/test/", "/samples/"]):
+                continue
+            try:
+                if os.path.isfile(f) and os.path.getsize(f) < 500000:
+                    with open(f, "r", encoding="utf-8") as jf:
+                        data = json.load(jf)
+                        if isinstance(data, dict):
+                            is_strata = ("exe" in data and "strata" in str(data["exe"]).lower()) or \
+                                        ("engine" in data and "strata" in str(data["engine"]).lower()) or \
+                                        ("model_name" in data and "strata" in f.lower())
+                            if is_strata:
+                                port = data.get("port", 8081)
+                                strata_port = port
+                                m_name = data.get("model_name")
+                                if m_name and m_name not in strata_models:
+                                    strata_models.append(m_name)
+            except Exception:
+                pass
+
+# 3. Check /opt/strata binaries or running process
+if not strata_models:
+    if os.path.exists("/opt/strata/bin/strata-qwen35moe") or os.path.exists("/opt/strata/run-strata.sh"):
+        strata_models.append("bigbang:v1")
+    else:
+        try:
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as cf:
+                        cmd = cf.read().replace(b"\x00", b" ").decode("utf-8", errors="ignore")
+                        if "strata" in cmd.lower() or "serve/server.py" in cmd:
+                            strata_models.append("bigbang:v1")
+                            break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+if strata_models:
+    models_list = []
+    for m_id in sorted(set(strata_models)):
+        clean_name = m_id.replace(":", " ").replace("-", " ").title()
+        models_list.append({
+            "id": m_id,
+            "name": f"{clean_name} (Strata)",
+            "reasoning": True,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 32768,
+            "maxTokens": 4096,
+            "compat": {
+                "clampOutputToModelMax": True,
+                "maxTokensField": "max_tokens"
+            }
+        })
+    providers["strata"] = {
+        "name": "Strata LLM Server (Local)",
+        "baseUrl": f"http://127.0.0.1:{strata_port}/v1",
+        "apiKey": "not-needed",
+        "api": "openai-completions",
+        "models": models_list
+    }
+    print(f"✓ Strata LLM Server detected: preconfigured strata provider with models: {sorted(set(strata_models))} in Pi agent")
+
+out_json = json.dumps({"providers": providers}, indent=2)
+for dest in [os.path.expanduser("~/.omp/agent/models.json"), os.path.expanduser("~/.pi/agent/models.json")]:
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as f:
+        f.write(out_json)
+'
 
 # Write config.yml default model configuration
 cat << 'EOF' > "$HOME/.omp/agent/config.yml"
@@ -1038,11 +1161,35 @@ cat << 'RUNNER_EOF' > "$HOME/omp.sh"
 # ==============================================================================
 # Oh My Pi (omp) launcher with automatic Gemini-FastAPI lifecycle management.
 # ==============================================================================
-FASTAPI_PORT=8000
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
 STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
 [ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
 
 # Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
 detect_firefox_doh() {
@@ -1078,10 +1225,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.dns-ai.ru/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
@@ -1376,6 +1523,10 @@ fi
 if [ $LIST_MODELS -eq 1 ]; then
     echo "Available models from Gemini-FastAPI:"
     curl --noproxy "*" -s "http://127.0.0.1:$FASTAPI_PORT/v1/models" | grep -o '"id": *"[^"]*"' | cut -d'"' -f4 | sed 's/^/  - /'
+    if curl --noproxy "*" --max-time 1 -s -f "http://127.0.0.1:8081/v1/models" >/dev/null 2>&1; then
+        echo "Available models from Strata LLM Server (Local):"
+        curl --noproxy "*" -s "http://127.0.0.1:8081/v1/models" | grep -o '"id": *"[^"]*"' | cut -d'"' -f4 | sed 's/^/  - strata:/'
+    fi
     exit 0
 fi
 
@@ -1388,12 +1539,23 @@ if [ ! -x "$BIN_DIR/omp" ]; then
     exit 1
 fi
 
-# 5. Execute omp (defaulting to local gemini-fastapi provider)
+# 5. Execute omp (defaulting to local gemini-fastapi provider or strata provider)
 MODEL_ARG="${MODEL_ARG:-gemini-flash}"
+PROVIDER_ARG="gemini-fastapi"
+
+case "$MODEL_ARG" in
+    strata:*|strata/*|strata.*|*bigbang*)
+        PROVIDER_ARG="strata"
+        MODEL_ARG="${MODEL_ARG#strata:}"
+        MODEL_ARG="${MODEL_ARG#strata/}"
+        MODEL_ARG="${MODEL_ARG#strata.}"
+        ;;
+esac
+
 if [ -n "$BWRAP_CMD" ]; then
-    exec $BWRAP_CMD "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
+    exec $BWRAP_CMD "$BIN_DIR/omp" --provider "$PROVIDER_ARG" --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 else
-    exec "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
+    exec "$BIN_DIR/omp" --provider "$PROVIDER_ARG" --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 fi
 RUNNER_EOF
 

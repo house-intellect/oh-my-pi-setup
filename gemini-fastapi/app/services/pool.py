@@ -130,26 +130,33 @@ class GeminiClientPool(metaclass=Singleton):
         if len(clients_to_load) == 0:
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query")
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
+        ca_bundle = os.environ.get("CURL_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
 
         for c in clients_to_load:
             curl_opts = {}
             try:
                 from curl_cffi import CurlOpt
                 curl_opts[CurlOpt.DOH_URL] = doh_url
+                if ca_bundle and hasattr(CurlOpt, "CAINFO"):
+                    curl_opts[CurlOpt.CAINFO] = ca_bundle.encode() if isinstance(ca_bundle, str) else ca_bundle
             except Exception:
                 pass
 
-            client = GeminiClientWrapper(
-                client_id=c.id,
-                secure_1psid=c.secure_1psid,
-                secure_1psidts=c.secure_1psidts,
-                secure_1psidcc=getattr(c, "secure_1psidcc", None),
-                proxy=c.proxy,
-                curl_options=curl_opts,
-            )
+            client_kwargs = {
+                "client_id": c.id,
+                "secure_1psid": c.secure_1psid,
+                "secure_1psidts": c.secure_1psidts,
+                "secure_1psidcc": getattr(c, "secure_1psidcc", None),
+                "proxy": c.proxy,
+                "curl_options": curl_opts,
+            }
+            if ca_bundle:
+                client_kwargs["verify"] = ca_bundle
+
+            client = GeminiClientWrapper(**client_kwargs)
             self._clients.append(client)
             self._id_map[c.id] = client
             self._round_robin.append(client)
@@ -185,7 +192,7 @@ class GeminiClientPool(metaclass=Singleton):
                 clients_to_update = [new_client]
 
             import os
-            doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query")
+            doh_url = os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query")
             curl_opts = {}
             try:
                 from curl_cffi import CurlOpt

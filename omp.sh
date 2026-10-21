@@ -2,11 +2,35 @@
 # ==============================================================================
 # Oh My Pi (omp) launcher with automatic Gemini-FastAPI lifecycle management.
 # ==============================================================================
-FASTAPI_PORT=8000
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
 STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 BIN_DIR="$HOME/.local/bin"
 [ -x "$BIN_DIR/omp" ] || BIN_DIR="$STACK_DIR/bin"
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
 
 # Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
 detect_firefox_doh() {
@@ -42,10 +66,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.bezmezhau.com/dns-query}"
+DEFAULT_DOH_URL="${CUSTOM_DOH_URL:-https://dns.dns-ai.ru/dns-query}"
 export GEMINI_DOH_URL="${GEMINI_DOH_URL:-$DEFAULT_DOH_URL}"
 export CUSTOM_DOH_URL="$GEMINI_DOH_URL"
 export PI_CODING_AGENT_DIR="$HOME/.omp/agent"
@@ -340,6 +364,10 @@ fi
 if [ $LIST_MODELS -eq 1 ]; then
     echo "Available models from Gemini-FastAPI:"
     curl --noproxy "*" -s "http://127.0.0.1:$FASTAPI_PORT/v1/models" | grep -o '"id": *"[^"]*"' | cut -d'"' -f4 | sed 's/^/  - /'
+    if curl --noproxy "*" --max-time 1 -s -f "http://127.0.0.1:8081/v1/models" >/dev/null 2>&1; then
+        echo "Available models from Strata LLM Server (Local):"
+        curl --noproxy "*" -s "http://127.0.0.1:8081/v1/models" | grep -o '"id": *"[^"]*"' | cut -d'"' -f4 | sed 's/^/  - strata:/'
+    fi
     exit 0
 fi
 
@@ -352,10 +380,21 @@ if [ ! -x "$BIN_DIR/omp" ]; then
     exit 1
 fi
 
-# 5. Execute omp (defaulting to local gemini-fastapi provider)
+# 5. Execute omp (defaulting to local gemini-fastapi provider or strata provider)
 MODEL_ARG="${MODEL_ARG:-gemini-flash}"
+PROVIDER_ARG="gemini-fastapi"
+
+case "$MODEL_ARG" in
+    strata:*|strata/*|strata.*|*bigbang*)
+        PROVIDER_ARG="strata"
+        MODEL_ARG="${MODEL_ARG#strata:}"
+        MODEL_ARG="${MODEL_ARG#strata/}"
+        MODEL_ARG="${MODEL_ARG#strata.}"
+        ;;
+esac
+
 if [ -n "$BWRAP_CMD" ]; then
-    exec $BWRAP_CMD "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
+    exec $BWRAP_CMD "$BIN_DIR/omp" --provider "$PROVIDER_ARG" --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 else
-    exec "$BIN_DIR/omp" --provider gemini-fastapi --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
+    exec "$BIN_DIR/omp" --provider "$PROVIDER_ARG" --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
 fi
