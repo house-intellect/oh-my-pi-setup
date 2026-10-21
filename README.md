@@ -90,52 +90,50 @@ The default model is `gemini-fastapi:gemini-flash`. You can also target pro/reas
 
 Configurations are stored in `~/.omp/agent/` (and mirrored to `~/.pi/agent/`):
 
-### Provider & Model Definition (`~/.omp/agent/models.json`)
-```json
-{
-  "providers": {
-    "gemini-fastapi": {
-      "name": "Gemini FastAPI (Local)",
-      "baseUrl": "http://127.0.0.1:8000/v1",
-      "apiKey": "sk-gemini-local",
-      "api": "openai-completions",
-      "models": [
-        {
-          "id": "gemini-flash",
-          "name": "Gemini Flash (Local)",
-          "reasoning": false,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        },
-        {
-          "id": "gemini-pro",
-          "name": "Gemini Pro (Local)",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        },
-        {
-          "id": "gemini-flash-lite",
-          "name": "Gemini Flash-Lite (Local)",
-          "reasoning": false,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 1048576,
-          "maxTokens": 65536
-        }
-      ]
-    }
-  }
-}
+### Provider & Model Definition (`~/.omp/agent/models.json` & `~/.omp/agent/models.yml`)
+OMP natively supports multiple local and remote providers simultaneously. When Strata is detected or running on port 8081, both `gemini-fastapi` and `strata` are independently available in the interactive model picker dialog (`Ctrl+P` / `/model`).
+
+```yaml
+providers:
+  gemini-fastapi:
+    name: Gemini FastAPI (Local)
+    baseUrl: http://127.0.0.1:8000/v1
+    apiKey: sk-gemini-local
+    api: openai-completions
+    models:
+      - id: gemini-flash
+        name: Gemini Flash (Local)
+      - id: gemini-pro
+        name: Gemini Pro (Local)
+      - id: gemini-flash-lite
+        name: Gemini Flash-Lite (Local)
+      - id: gemini-3.8-flash
+        name: Gemini 3.8 Flash (Local)
+      - id: gemini-extended-thinking
+        name: Gemini Extended Thinking (Local)
+  strata:
+    name: Strata LLM Server (Local)
+    baseUrl: http://127.0.0.1:8081/v1
+    apiKey: not-needed
+    api: openai-completions
+    models:
+      - id: bigbang:v1
+        name: Bigbang V1 (Strata)
+        reasoning: true
+        contextWindow: 32768
+        maxTokens: 4096
+        compat:
+          clampOutputToModelMax: true
+          maxTokensField: max_tokens
 ```
 
 ### Default Agent Config (`~/.omp/agent/config.yml`)
 ```yaml
-model: "gemini-fastapi:gemini-flash"
+model: gemini-fastapi/gemini-flash
+modelRoles:
+  default: gemini-fastapi/gemini-flash
+  smol: gemini-fastapi/gemini-flash-lite
+  slow: gemini-fastapi/gemini-pro
 ```
 
 ---

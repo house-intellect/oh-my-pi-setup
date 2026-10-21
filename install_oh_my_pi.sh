@@ -899,7 +899,7 @@ except Exception:
 
 echo "=== [5/5] Configuring Oh My Pi & Runner Script ==="
 
-# Write models.json with automatic Strata detection to both ~/.omp/agent/ and ~/.pi/agent/
+# Write models.json and models.yml with automatic Strata detection to both ~/.omp/agent/ and ~/.pi/agent/
 "$PYTHON_EXEC" -c '
 import json, os, glob, urllib.request
 
@@ -932,6 +932,24 @@ providers = {
         "id": "gemini-flash-lite",
         "name": "Gemini Flash-Lite (Local)",
         "reasoning": False,
+        "input": ["text", "image"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 1048576,
+        "maxTokens": 65536
+      },
+      {
+        "id": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash (Local)",
+        "reasoning": False,
+        "input": ["text", "image"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 1048576,
+        "maxTokens": 65536
+      },
+      {
+        "id": "gemini-extended-thinking",
+        "name": "Gemini Extended Thinking (Local)",
+        "reasoning": True,
         "input": ["text", "image"],
         "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
         "contextWindow": 1048576,
@@ -1034,17 +1052,70 @@ if strata_models:
     }
     print(f"✓ Strata LLM Server detected: preconfigured strata provider with models: {sorted(set(strata_models))} in Pi agent")
 
+# Helper YAML serializer
+def to_yaml_str(d, indent=0):
+    lines = []
+    ind = "  " * indent
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if isinstance(v, (dict, list)):
+                lines.append(f"{ind}{k}:")
+                lines.append(to_yaml_str(v, indent + 1))
+            elif isinstance(v, bool):
+                lines.append(f"{ind}{k}: {str(v).lower()}")
+            elif isinstance(v, (int, float)):
+                lines.append(f"{ind}{k}: {v}")
+            elif v is None:
+                lines.append(f"{ind}{k}: null")
+            else:
+                lines.append(f"{ind}{k}: {v}")
+    elif isinstance(d, list):
+        for item in d:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{ind}-")
+                sub = to_yaml_str(item, indent + 1).splitlines()
+                if sub and not sub[0].strip().startswith("-"):
+                    first = sub[0].strip()
+                    lines[-1] = f"{ind}- {first}"
+                    lines.extend(sub[1:])
+                else:
+                    lines.extend(sub)
+            elif isinstance(item, bool):
+                lines.append(f"{ind}- {str(item).lower()}")
+            elif isinstance(item, (int, float)):
+                lines.append(f"{ind}- {item}")
+            else:
+                lines.append(f"{ind}- {item}")
+    return "\n".join(lines)
+
 out_json = json.dumps({"providers": providers}, indent=2)
 for dest in [os.path.expanduser("~/.omp/agent/models.json"), os.path.expanduser("~/.pi/agent/models.json")]:
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w") as f:
         f.write(out_json)
+
+try:
+    import yaml
+    out_yaml = yaml.dump({"providers": providers}, sort_keys=False)
+except Exception:
+    out_yaml = to_yaml_str({"providers": providers})
+
+for dest in [os.path.expanduser("~/.omp/agent/models.yml"), os.path.expanduser("~/.pi/agent/models.yml")]:
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as f:
+        f.write(out_yaml)
 '
 
 # Write config.yml default model configuration
 cat << 'EOF' > "$HOME/.omp/agent/config.yml"
-model: "gemini-fastapi:gemini-flash"
+model: gemini-fastapi/gemini-flash
+modelRoles:
+  default: gemini-fastapi/gemini-flash
+  smol: gemini-fastapi/gemini-flash-lite
+  slow: gemini-fastapi/gemini-pro
 EOF
+mkdir -p "$HOME/.pi/agent"
+cp "$HOME/.omp/agent/config.yml" "$HOME/.pi/agent/config.yml"
 # Setup local DNS hosts spoofing
 SPOOF_DIR="$HOME/.local/share/gemini-spoof"
 HOSTS_FILE="$SPOOF_DIR/hosts"
@@ -1414,16 +1485,52 @@ check_proxy_auth() {
     return 0
 }
 
-check_proxy_auth
-auth_status=$?
+MODEL_IS_STRATA=0
+case "$MODEL_ARG" in
+    strata:*|strata/*|strata.*|*bigbang*)
+        MODEL_IS_STRATA=1
+        ;;
+esac
 
-if [ $auth_status -eq 0 ]; then
-    # Server is active, authenticated, and healthy. Do not restart or kill.
-    :
+if [ $MODEL_IS_STRATA -eq 1 ]; then
+    # Strata model requested: verify Strata endpoint is responding
+    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8081/v1/models" >/dev/null 2>&1; then
+        echo "Error: Strata LLM Server is not responding on http://127.0.0.1:8081/v1"
+        echo "Please verify strata service is active: systemctl status strata"
+        exit 1
+    fi
 else
-    # If auth_status is 1 (confirmed unauthenticated/guest error):
-    # Only then terminate the dead/unauthenticated instance so a new one can be started.
-    if [ $auth_status -eq 1 ]; then
+    check_proxy_auth
+    auth_status=$?
+
+    if [ $auth_status -eq 0 ]; then
+        # Server is active, authenticated, and healthy. Do not restart or kill.
+        :
+    else
+        # If auth_status is 1 (confirmed unauthenticated/guest error):
+        # Only then terminate the dead/unauthenticated instance so a new one can be started.
+        if [ $auth_status -eq 1 ]; then
+            local_pids=""
+            if command -v lsof >/dev/null 2>&1; then
+                local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
+            elif command -v fuser >/dev/null 2>&1; then
+                local_pids=$(fuser "${FASTAPI_PORT}/tcp" 2>/dev/null || true)
+            fi
+            if [ -n "$local_pids" ]; then
+                for pid in $local_pids; do
+                    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                        echo "[omp.sh] Terminating unauthenticated Gemini-FastAPI instance: PID $pid..."
+                        kill -TERM "$pid" 2>/dev/null || true
+                        sleep 1
+                        if kill -0 "$pid" 2>/dev/null; then
+                            kill -9 "$pid" 2>/dev/null || true
+                        fi
+                    fi
+                done
+            fi
+        fi
+
+        # Check if port 8000 is occupied by an unresponsive or conflicting process
         local_pids=""
         if command -v lsof >/dev/null 2>&1; then
             local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
@@ -1433,7 +1540,13 @@ else
         if [ -n "$local_pids" ]; then
             for pid in $local_pids; do
                 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    echo "[omp.sh] Terminating unauthenticated Gemini-FastAPI instance: PID $pid..."
+                    cmd=""
+                    if [ -r "/proc/$pid/cmdline" ]; then
+                        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                    fi
+                    [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                    echo "[omp.sh] ⚠️  Found process occupying required port $FASTAPI_PORT: PID $pid ($cmd)"
+                    echo "[omp.sh]    -> Terminating PID $pid to allow Gemini-FastAPI to bind to port $FASTAPI_PORT..."
                     kill -TERM "$pid" 2>/dev/null || true
                     sleep 1
                     if kill -0 "$pid" 2>/dev/null; then
@@ -1442,80 +1555,60 @@ else
                 fi
             done
         fi
-    fi
 
-    # Check if port 8000 is occupied by an unresponsive or conflicting process
-    local_pids=""
-    if command -v lsof >/dev/null 2>&1; then
-        local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
-    elif command -v fuser >/dev/null 2>&1; then
-        local_pids=$(fuser "${FASTAPI_PORT}/tcp" 2>/dev/null || true)
-    fi
-    if [ -n "$local_pids" ]; then
-        for pid in $local_pids; do
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                cmd=""
-                if [ -r "/proc/$pid/cmdline" ]; then
-                    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
-                fi
-                [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
-                echo "[omp.sh] ⚠️  Found process occupying required port $FASTAPI_PORT: PID $pid ($cmd)"
-                echo "[omp.sh]    -> Terminating PID $pid to allow Gemini-FastAPI to bind to port $FASTAPI_PORT..."
-                kill -TERM "$pid" 2>/dev/null || true
-                sleep 1
-                if kill -0 "$pid" 2>/dev/null; then
-                    kill -9 "$pid" 2>/dev/null || true
-                fi
-            fi
-        done
-    fi
-
-    echo "[omp.sh] Starting Gemini-FastAPI background daemon on port $FASTAPI_PORT..."
-    if [ -n "$BWRAP_CMD" ]; then
-        echo "[omp.sh] Applying local hosts DNS resolution via bwrap: $HOSTS_FILE"
-    fi
-    if [ ! -x "$PYTHON_EXEC" ]; then
-        echo "Error: Python executable for Gemini-FastAPI not found."
-        exit 1
-    fi
-    (
-        cd "$FASTAPI_DIR"
+        echo "[omp.sh] Starting Gemini-FastAPI background daemon on port $FASTAPI_PORT..."
         if [ -n "$BWRAP_CMD" ]; then
-            if command -v setsid >/dev/null 2>&1; then
-                setsid env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
-                    $BWRAP_CMD "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+            echo "[omp.sh] Applying local hosts DNS resolution via bwrap: $HOSTS_FILE"
+        fi
+        if [ ! -x "$PYTHON_EXEC" ]; then
+            echo "Error: Python executable for Gemini-FastAPI not found."
+            exit 1
+        fi
+        (
+            cd "$FASTAPI_DIR"
+            if [ -n "$BWRAP_CMD" ]; then
+                if command -v setsid >/dev/null 2>&1; then
+                    setsid env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+                        $BWRAP_CMD "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+                else
+                    nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+                        $BWRAP_CMD "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+                fi
             else
-                nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
-                    $BWRAP_CMD "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+                if command -v setsid >/dev/null 2>&1; then
+                    setsid env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+                        "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+                else
+                    nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
+                        "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+                fi
             fi
-        else
-            if command -v setsid >/dev/null 2>&1; then
-                setsid env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
-                    "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+        )
+
+        READY=0
+        printf "[omp.sh] Waiting for Gemini-FastAPI to initialize"
+        for i in $(seq 1 25); do
+            if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+                READY=1
+                echo " ready!"
+                break
+            fi
+            printf "."
+            sleep 1
+        done
+        echo ""
+
+        if [ $READY -eq 0 ]; then
+            if curl --noproxy "*" --max-time 1 -s -f "http://127.0.0.1:8081/v1/models" >/dev/null 2>&1; then
+                echo "[omp.sh] ⚠️  Gemini-FastAPI failed to start on port $FASTAPI_PORT, but Strata LLM Server is active on port 8081."
+                echo "[omp.sh]    Proceeding with Strata LLM Server..."
+                [ -z "$MODEL_ARG" ] && MODEL_ARG="strata/bigbang:v1"
             else
-                nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY \
-                    "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &
+                echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT within 25 seconds, and no local Strata server was found."
+                [ -f "$STACK_DIR/proxy_access.log" ] && tail -n 25 "$STACK_DIR/proxy_access.log"
+                exit 1
             fi
         fi
-    )
-
-    READY=0
-    printf "[omp.sh] Waiting for Gemini-FastAPI to initialize"
-    for i in $(seq 1 60); do
-        if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
-            READY=1
-            echo " ready!"
-            break
-        fi
-        printf "."
-        sleep 1
-    done
-    echo ""
-
-    if [ $READY -eq 0 ]; then
-        echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT within 60 seconds."
-        [ -f "$STACK_DIR/proxy_access.log" ] && tail -n 25 "$STACK_DIR/proxy_access.log"
-        exit 1
     fi
 fi
 
@@ -1539,23 +1632,39 @@ if [ ! -x "$BIN_DIR/omp" ]; then
     exit 1
 fi
 
-# 5. Execute omp (defaulting to local gemini-fastapi provider or strata provider)
-MODEL_ARG="${MODEL_ARG:-gemini-flash}"
-PROVIDER_ARG="gemini-fastapi"
+# 5. Execute omp (with all configured providers available in the model picker)
+EXEC_MODEL_ARGS=()
+if [ -n "$MODEL_ARG" ]; then
+    case "$MODEL_ARG" in
+        strata:*|strata/*)
+            val="${MODEL_ARG#strata:}"
+            val="${val#strata/}"
+            EXEC_MODEL_ARGS=("--model" "strata/$val")
+            ;;
+        *bigbang*)
+            EXEC_MODEL_ARGS=("--model" "strata/bigbang:v1")
+            ;;
+        gemini-fastapi/*|gemini-fastapi:*)
+            val="${MODEL_ARG#gemini-fastapi:}"
+            val="${val#gemini-fastapi/}"
+            EXEC_MODEL_ARGS=("--model" "gemini-fastapi/$val")
+            ;;
+        gemini-*)
+            EXEC_MODEL_ARGS=("--model" "gemini-fastapi/$MODEL_ARG")
+            ;;
+        *)
+            EXEC_MODEL_ARGS=("--model" "$MODEL_ARG")
+            ;;
+    esac
+fi
 
-case "$MODEL_ARG" in
-    strata:*|strata/*|strata.*|*bigbang*)
-        PROVIDER_ARG="strata"
-        MODEL_ARG="${MODEL_ARG#strata:}"
-        MODEL_ARG="${MODEL_ARG#strata/}"
-        MODEL_ARG="${MODEL_ARG#strata.}"
-        ;;
-esac
-
+# NOTE: Do NOT pass --provider. Omitting --provider allows OMP to load all providers from
+# models.yml / models.json simultaneously, making both gemini-fastapi and strata
+# models independently available in the interactive model picker dialog (Ctrl+P / /model).
 if [ -n "$BWRAP_CMD" ]; then
-    exec $BWRAP_CMD "$BIN_DIR/omp" --provider "$PROVIDER_ARG" --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
+    exec $BWRAP_CMD "$BIN_DIR/omp" "${EXEC_MODEL_ARGS[@]}" "${EXTRA_ARGS[@]}"
 else
-    exec "$BIN_DIR/omp" --provider "$PROVIDER_ARG" --model "$MODEL_ARG" "${EXTRA_ARGS[@]}"
+    exec "$BIN_DIR/omp" "${EXEC_MODEL_ARGS[@]}" "${EXTRA_ARGS[@]}"
 fi
 RUNNER_EOF
 
